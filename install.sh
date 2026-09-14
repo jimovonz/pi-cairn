@@ -26,7 +26,7 @@ AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 SETTINGS="$AGENT_DIR/settings.json"
 
 # Load order is significant; keep cairn before routing.
-EXTENSIONS=("$REPO/extensions/cairn.ts" "$REPO/extensions/routing.ts")
+EXTENSIONS=("$REPO/extensions/cairn.ts" "$REPO/extensions/routing.ts" "$REPO/extensions/graph.ts")
 
 MODE="install"
 [[ "${1:-}" == "--uninstall" ]] && MODE="uninstall"
@@ -56,14 +56,27 @@ if [[ "$MODE" == "install" ]]; then
 	need_file "${CAIRN_HOME:-$HOME/Projects/cairn}/hooks/pi_bridge.py" pi_bridge.py
 	need_file "${CAIRN_HOME:-$HOME/Projects/cairn}/cairn/query.py" query.py
 	need_file "$REPO/node_modules/typebox" typebox
+	# The routing layer calls the CCH interceptors by absolute path, and they in turn
+	# invoke cache-wrap.py by its own resolved path -- neither needs to be on PATH.
+	need_file "${CCH_HOME:-$HOME/Projects/claude-context-hooks}/hooks/intercept-bash.py" intercept-bash.py
 	# Optional: only the routing layer needs these, and it is off by default.
-	for opt in rtk cairn-graph cache-wrap.py ccm-get.py; do
+	for opt in rtk cairn-graph ccm-get.py; do
 		if command -v "$opt" >/dev/null 2>&1; then
 			printf '  ok    %-16s %s\n' "$opt" "$(command -v "$opt")"
 		else
-			printf '  warn  %-16s absent (routing layer will stay disabled)\n' "$opt"
+			printf '  warn  %-16s absent (PI_ROUTING/PI_RTK degrade to no-ops)\n' "$opt"
 		fi
 	done
+	# Retrieval is ~10x slower without the embedding daemon: each call loads
+	# sentence-transformers from scratch (~8.0s) instead of hitting the resident
+	# socket (~0.7s). Not fatal, but PI_CAIRN is painful without it.
+	if python3 "${CAIRN_HOME:-$HOME/Projects/cairn}/cairn/daemon.py" status 2>/dev/null | grep -qi healthy; then
+		printf '  ok    %-16s serving healthy\n' "cairn daemon"
+	else
+		printf '  warn  %-16s NOT running: retrieval costs ~8s per prompt instead of ~0.7s\n' "cairn daemon"
+		printf '        start it: python3 %s/cairn/daemon.py start\n' "${CAIRN_HOME:-$HOME/Projects/cairn}"
+	fi
+
 	if [[ $fail -ne 0 ]]; then
 		echo
 		echo "Required dependencies are missing. Nothing was installed." >&2
@@ -132,6 +145,7 @@ Every layer is OFF by default; enable what you want:
   export PI_ROUTING=1    # deny+suggest routing of read/grep/find/ls
   export PI_CCM=1        # wrap bash in cache-wrap.py (stubs, graph footer, rules)
   export PI_RTK=1        # rewrite bash commands through rtk
+  export PI_GRAPH=1      # expose the code_graph lookup tool to the model
 
 Try a layer without registering it (use a real path, never a symlink):
 

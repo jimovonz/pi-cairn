@@ -33,6 +33,7 @@ TypeScript here is thin glue that shells out:
 | Routing | `guards.block()` via CCH | `PI_ROUTING` |
 | Caching + graph footer + rules | `cache-wrap.py -- <cmd>` | `PI_CCM` |
 | Token proxy | `rtk rewrite <cmd>` | `PI_RTK` |
+| Code-graph lookup | `cairn-graph` | `PI_GRAPH` |
 
 Wrapping bash in `cache-wrap.py` is what delivers the `[CCM_CACHED]` stub, the
 symbol menu, the `[cairn-graph: …]` footer and `.cch/rules` all at once — none of
@@ -60,11 +61,35 @@ ordinary continuation, and `agent_settled` runs after the loop has exited.
    Claude Code hands every hook the original input, so ordering there does not chain
    the way a pipeline does.
 
+## Performance
+
+Measured on this machine, per call:
+
+| Call | Cost | When |
+|---|---|---|
+| `pi_bridge spec` | 41 ms | once per user prompt |
+| `pi_bridge retrieve` | **0.7 s with the daemon, 8.0 s without** | once per user prompt |
+| `pi_bridge capture` | 241 ms | once per agent run |
+| `pi_bridge enforce` | 48 ms | once per agent run |
+| `intercept-bash.py` | 23 ms | per bash call |
+| `rtk rewrite` | 15 ms | per bash call |
+
+**Run the cairn embedding daemon.** It is the single biggest lever here: retrieval
+spawns a fresh Python that loads sentence-transformers (3.3 s for the import alone)
+unless the resident socket is up, which turns every prompt into an 8-second wait.
+
+```bash
+python3 ~/Projects/cairn/cairn/daemon.py start
+```
+
+`install.sh` checks for it and warns if it is down.
+
 ## Layout
 
 ```
 extensions/cairn.ts     memory: before_agent_start + agent_end + cairn_query
 extensions/routing.ts   one ordered tool_call pipeline
+extensions/graph.ts     code_graph lookup tool (the graph pull half)
 lib/bridge.ts           the only subprocess helper
 patches/                pi's own build fix, so a fresh pi clone compiles
 install.sh              registers extensions by path; --uninstall reverses it
