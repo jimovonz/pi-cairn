@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import routingExtension, { parseVerdict } from "../extensions/routing.ts";
+import routingExtension, { parseVerdict, routingGuide } from "../extensions/routing.ts";
 
 const FLAGS = ["PI_ROUTING", "PI_CCM", "PI_RTK"];
 
@@ -75,8 +75,30 @@ describe("routing extension", () => {
 			process.env[flag] = "1";
 			const s = stub();
 			routingExtension(s.pi as never);
-			expect(Object.keys(s.handlers), `gate ${flag}`).toEqual(["tool_call"]);
+			expect(Object.keys(s.handlers).sort(), `gate ${flag}`).toEqual(["before_agent_start", "tool_call"]);
 		}
+	});
+
+	it("contributes a byte-identical system prompt on every turn", () => {
+		// It heads the cache prefix; any variation invalidates the whole cached
+		// context at 50x the token price.
+		process.env.PI_ROUTING = "1";
+		process.env.PI_CCM = "1";
+		const s = stub();
+		routingExtension(s.pi as never);
+		const handler = s.handlers.before_agent_start as (e: unknown) => { systemPrompt: string };
+		const a = handler({ systemPrompt: "BASE" });
+		const b = handler({ systemPrompt: "BASE" });
+		expect(b.systemPrompt).toBe(a.systemPrompt);
+		expect(a.systemPrompt.startsWith("BASE")).toBe(true);
+	});
+
+	it("describes only the layers that are switched on", () => {
+		expect(routingGuide(true, false, false)).toMatch(/cairn-graph --location/);
+		expect(routingGuide(true, false, false)).not.toMatch(/CCM_CACHED/);
+		expect(routingGuide(false, true, false)).toMatch(/ccm-get\.py/);
+		expect(routingGuide(false, true, false)).not.toMatch(/cch-edit/);
+		expect(routingGuide(false, false, true)).toMatch(/rewritten/);
 	});
 
 	it("leaves native tools alone when only the bash gates are on", async () => {

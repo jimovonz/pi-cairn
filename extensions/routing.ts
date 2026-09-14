@@ -124,11 +124,69 @@ async function rtkRewrite(command: string, ctx: ExtensionContext): Promise<strin
 	return parseVerdict(result.stdout).command;
 }
 
+/**
+ * The routing rules, stated up front rather than discovered by denial.
+ *
+ * This is a cost optimisation as much as a usability one. Output tokens cost 200x
+ * a cached input token on deepseek-v4.1-flash, so every blocked tool call the model
+ * has to read, reason about and retry is paid at the most expensive rate -- while
+ * these instructions sit in the cached prefix for effectively nothing. Observed
+ * before this existed: the model spent an entire turn discovering the graph
+ * workflow after being blocked, then narrated the discovery.
+ *
+ * The string MUST be constant for the session. It heads the cache prefix along with
+ * the rest of the system prompt, so anything varying here would invalidate the
+ * whole cached context on every turn.
+ */
+export function routingGuide(routing: boolean, ccm: boolean, rtk: boolean): string {
+	const lines: string[] = ["# Tool routing", ""];
+	if (routing) {
+		lines.push(
+			"The read, grep, find and ls tools are disabled. Use bash instead:",
+			"  - read a file      cat PATH, or sed -n 'A,Bp' PATH for a range",
+			"  - search contents  rg -n PATTERN PATH",
+			"  - list files       fd PATTERN PATH",
+			"  - edit a file      cch-edit.py PATH 'old' 'new'   (literal, must be unique)",
+			"  - write a file     cch-write.py PATH  (content on stdin)",
+			"Images and PDFs are the exception: the read tool still handles those.",
+			"",
+			"Never read a whole code file. Locate the symbol first, then read only its",
+			"range -- a bulk read of a code file is blocked outright:",
+			"  cairn-graph --location SYMBOL   ->  file:line-line",
+			"  sed -n 'A,Bp' FILE",
+			"cairn-graph also answers --callers, --callees, --tests, --impact and",
+			"--context-pack. Prefer it over grepping for a definition.",
+			"",
+		);
+	}
+	if (ccm) {
+		lines.push(
+			"Large command output is replaced by a [CCM_CACHED] stub carrying a key.",
+			"Retrieve only the part you need rather than the whole thing:",
+			"  ccm-get.py KEY --grep PATTERN [-C N] | --head N | --tail N | --lines A-B",
+			"Stubs for code files list their symbols; prefer --symbol NAME over guessing",
+			"line ranges.",
+			"",
+		);
+	}
+	if (rtk) {
+		lines.push("Commands are rewritten through a token-saving proxy automatically. Write them normally.", "");
+	}
+	return lines.join("\n").trimEnd();
+}
+
 export default function (pi: ExtensionAPI) {
 	const routing = flag("PI_ROUTING");
 	const ccm = flag("PI_CCM");
 	const rtk = flag("PI_RTK");
 	if (!routing && !ccm && !rtk) return;
+
+	// Built once, from flags that cannot change mid-session, so the system prompt
+	// this contributes is byte-identical on every turn.
+	const guide = routingGuide(routing, ccm, rtk);
+	pi.on("before_agent_start", (event: { systemPrompt: string }) => ({
+		systemPrompt: `${event.systemPrompt}\n\n${guide}`,
+	}));
 
 	pi.on("tool_call", async (event: ToolCallEvent, ctx: ExtensionContext): Promise<ToolCallEventResult | undefined> => {
 		const toolName = event.toolName;

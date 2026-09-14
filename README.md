@@ -112,6 +112,36 @@ Note `minimal`, `low`, `medium` and `max` map to `null` — only `off`, `high` a
 `xhigh` reach this model. Its default is thinking-on, which is also its most
 verbose configuration.
 
+## Backend pinning (required for caching)
+
+`~/.pi/agent/models.json` pins the OpenRouter backend. This is not a
+micro-optimisation — **most backends serving this model do not cache at all**,
+and the advertised `cacheRead` price is meaningless on a backend that never
+returns a hit. Measured by sending an identical 3.4k-token prefix twice:
+
+| Backend | 2nd-call cost | Caches? |
+|---|---|---|
+| **Together** | $0.0000494 | yes — 21.6x cheaper than the cold call |
+| Wafer | $0.0001022 | yes |
+| GMICloud | $0.0001434 | yes |
+| Novita, Parasail, SiliconFlow | ~$0.00105 | **no — `cached_tokens` stays 0** |
+
+All six advertise the same $0.006/M cacheRead. Alibaba, Modal and BaseTen list
+5x that and are excluded; Relace is fp4 and excluded on quality grounds.
+
+DeepSeek's own first-party endpoint is **not usable on this account**: pinning it
+returns `404 Paid model training violation (account settings)`. The slug is valid
+(the routing funnel narrows 16 endpoints to 1) but it fails the privacy guardrail.
+Changing that would mean relaxing the account's data-training policy, so the pin
+targets caching third parties instead.
+
+Verified through pi, two turns of one session:
+
+```
+turn 1  input 3214  cacheRead 0     $0.0011226
+turn 2  input 1128  cacheRead 3200  $0.0003984
+```
+
 ## Layout
 
 ```
