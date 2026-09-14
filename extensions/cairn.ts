@@ -96,6 +96,29 @@ export default function (pi: ExtensionAPI) {
 	/** Enforcement budget for the current user prompt. Reset on every new prompt. */
 	let enforcements = 0;
 
+	/**
+	 * The [cm] spec is a constant, so fetch it once and reuse it for the session.
+	 *
+	 * This is cache economics, not a micro-optimisation. The system prompt is the
+	 * head of the provider's cache prefix, and any change to it invalidates the
+	 * entire cached context. On deepseek-v4.1-flash a cached input token costs
+	 * $0.006/M against $0.30/M fresh, so one needless prefix change re-ingests the
+	 * whole conversation at fifty times the price -- on a long session that is the
+	 * single most expensive mistake this extension could make.
+	 *
+	 * Fetching per prompt invited exactly that: one transient failure would drop the
+	 * spec for a turn and restore it the next, flapping the prompt back and forth.
+	 * Memoised, it can only ever change once.
+	 */
+	let cachedSpec: string | undefined;
+	const specOnce = async (): Promise<string> => {
+		if (cachedSpec === undefined) {
+			const fetched = await runText(pi, "python3", [bridge, "spec"]);
+			if (fetched) cachedSpec = fetched;
+		}
+		return cachedSpec ?? "";
+	};
+
 	/** Identifiers every bridge call needs. Omitting --cwd silently degrades
 	 *  retrieval to a global-only search, so it is always passed. */
 	const identity = (ctx: ExtensionContext): string[] => [
@@ -112,7 +135,7 @@ export default function (pi: ExtensionAPI) {
 		enforcements = 0;
 
 		const [spec, context] = await Promise.all([
-			runText(pi, "python3", [bridge, "spec"]),
+			specOnce(),
 			runText(pi, "python3", [bridge, "retrieve", "--query", event.prompt, ...identity(ctx)], {
 				timeoutMs: RETRIEVE_TIMEOUT_MS,
 			}),

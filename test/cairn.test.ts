@@ -129,6 +129,44 @@ describe("cairn extension", () => {
 		expect(h.followUps).toHaveLength(3);
 	});
 
+	it("fetches the spec once and keeps the system prompt byte-identical across prompts", async () => {
+		// The system prompt heads the provider's cache prefix. Any change invalidates
+		// the whole cached context -- 50x the token price on deepseek-v4.1-flash -- so
+		// a constant must never flap in and out.
+		const h = harness((sub) => (sub === "spec" ? "SPEC-TEXT" : ""));
+		cairnExtension(h.pi as never);
+		const first = (await h.handlers.before_agent_start?.(
+			{ type: "before_agent_start", prompt: "one", systemPrompt: "BASE" },
+			h.ctx,
+		)) as { systemPrompt?: string };
+		const second = (await h.handlers.before_agent_start?.(
+			{ type: "before_agent_start", prompt: "two", systemPrompt: "BASE" },
+			h.ctx,
+		)) as { systemPrompt?: string };
+
+		expect(second.systemPrompt).toBe(first.systemPrompt);
+		expect(h.execCalls.filter((args) => args[1] === "spec")).toHaveLength(1);
+	});
+
+	it("does not flap the system prompt when a later spec fetch would fail", async () => {
+		let calls = 0;
+		const h = harness((sub) => {
+			if (sub !== "spec") return "";
+			calls += 1;
+			return calls === 1 ? "SPEC-TEXT" : ""; // a transient failure on any later call
+		});
+		cairnExtension(h.pi as never);
+		const first = (await h.handlers.before_agent_start?.(
+			{ type: "before_agent_start", prompt: "one", systemPrompt: "BASE" },
+			h.ctx,
+		)) as { systemPrompt?: string };
+		const second = (await h.handlers.before_agent_start?.(
+			{ type: "before_agent_start", prompt: "two", systemPrompt: "BASE" },
+			h.ctx,
+		)) as { systemPrompt?: string };
+		expect(second.systemPrompt).toBe(first.systemPrompt);
+	});
+
 	it("captures before enforcing, so a rejected reply still banks its memories", async () => {
 		const h = harness((sub) => (sub === "enforce" ? "Missing." : ""));
 		cairnExtension(h.pi as never);

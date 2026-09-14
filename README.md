@@ -84,6 +84,34 @@ python3 ~/Projects/cairn/cairn/daemon.py start
 
 `install.sh` checks for it and warns if it is down.
 
+## Tuning for deepseek-v4.1-flash
+
+From pi's own catalog (`packages/ai/src/providers/data/openrouter.json`):
+
+```
+input $0.30/M · output $1.20/M · cacheRead $0.006/M · cacheWrite $0
+contextWindow 1,048,576 · maxTokens 384,000
+thinkingLevelMap: off→none, high→high, xhigh→xhigh; minimal/low/medium/max → null
+```
+
+Three consequences drive the design here:
+
+1. **A cached input token costs 1/50th of a fresh one, and cache writes are free.**
+   Prefix stability is therefore the dominant cost lever — far more than prompt
+   size. This is why the `[cm]` spec is fetched once per session and appended
+   unconditionally: letting it flap in and out would invalidate the whole cached
+   context, and on a long conversation that is a 50x re-ingestion.
+2. **Output costs 200x a cached input token.** Injecting context is cheap;
+   generating is expensive. Prefer telling the model something up front over
+   letting it discover it by trial — every denial it has to reason about is a
+   round trip paid in output tokens.
+3. **Volatile content goes late.** Retrieved memories change every prompt, so they
+   ride as a trailing custom message rather than in the system prompt.
+
+Note `minimal`, `low`, `medium` and `max` map to `null` — only `off`, `high` and
+`xhigh` reach this model. Its default is thinking-on, which is also its most
+verbose configuration.
+
 ## Layout
 
 ```
