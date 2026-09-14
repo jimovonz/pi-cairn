@@ -17,7 +17,14 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentEndEvent, BeforeAgentStartEvent, BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+	AgentEndEvent,
+	BeforeAgentStartEvent,
+	BeforeAgentStartEventResult,
+	ExtensionAPI,
+	ExtensionContext,
+	ToolResultEvent,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { run, runText } from "../lib/bridge.ts";
 
@@ -70,6 +77,24 @@ function assistantText(messages: unknown[]): string {
 		}
 	}
 	return parts.join("\n").trim();
+}
+
+/**
+ * Recover a command's real exit status from its output.
+ *
+ * pi's bash tool throws on a non-zero exit, which would surface as isError. But
+ * when the CCM layer is enabled every command runs under cache-wrap.py, which
+ * reports the real status in-band and exits 0 itself -- so the tool sees success
+ * and isError is false no matter how badly the command failed. Failures are the
+ * results most worth checkpointing, so read the status back out the way a reader
+ * would: an `[exit N]` line on inline output, or the `exit:` field on a stub.
+ */
+export function recoverExitCode(text: string, isError: boolean): number {
+	const inline = text.match(/^\[exit (\d+)\]\s*$/m);
+	if (inline) return Number(inline[1]);
+	const stub = text.match(/^exit:\s*(\d+)\s*$/m);
+	if (stub) return Number(stub[1]);
+	return isError ? 1 : 0;
 }
 
 /** Run a bridge subcommand against a temp file holding the assistant's text. */
@@ -221,6 +246,31 @@ export default function (pi: ExtensionAPI) {
 			// The same call from turn_end would be absorbed as an ordinary continuation.
 			pi.sendUserMessage(reason, { deliverAs: "followUp" });
 		});
+	});
+
+	// Mid-response capture: after a notable tool result, invite an inline
+	// <memory_note> so a finding is not lost by the time the turn ends. The bridge
+	// owns what counts as notable and the per-session budget, reusing posttool_hook's
+	// own logic; this side only shapes the payload and appends the nudge.
+	pi.on("tool_result", async (event: ToolResultEvent, ctx: ExtensionContext) => {
+		const text = (event.content ?? [])
+			.map((block) => (block as { type?: string; text?: string }))
+			.filter((block) => block.type === "text" && typeof block.text === "string")
+			.map((block) => block.text as string)
+			.join("\n");
+		const payload = JSON.stringify({
+			tool: event.toolName,
+			input: event.input ?? {},
+			output: { exitCode: recoverExitCode(text, event.isError), stdout: text },
+		});
+
+		const nudge = await withTextFile(payload, (file) =>
+			runText(pi, "python3", [bridge, "checkpoint", "--text-file", file, ...identity(ctx)], {
+				timeoutMs: CAPTURE_TIMEOUT_MS,
+			}),
+		);
+		if (!nudge) return undefined;
+		return { content: [...(event.content ?? []), { type: "text" as const, text: `\n\n${nudge}` }] };
 	});
 
 	pi.registerTool({

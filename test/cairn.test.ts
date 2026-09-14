@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import cairnExtension from "../extensions/cairn.ts";
+import cairnExtension, { recoverExitCode } from "../extensions/cairn.ts";
 
 interface Handlers {
 	[event: string]: (event: unknown, ctx: unknown) => Promise<unknown> | unknown;
@@ -57,10 +57,10 @@ describe("cairn extension", () => {
 		expect(h.tools).toHaveLength(0);
 	});
 
-	it("registers the two handlers and the query tool when enabled", () => {
+	it("registers its handlers and the query tool when enabled", () => {
 		const h = harness(() => "");
 		cairnExtension(h.pi as never);
-		expect(Object.keys(h.handlers).sort()).toEqual(["agent_end", "before_agent_start"]);
+		expect(Object.keys(h.handlers).sort()).toEqual(["agent_end", "before_agent_start", "tool_result"]);
 		expect(h.tools.map((t) => t.name)).toEqual(["cairn_query"]);
 	});
 
@@ -163,6 +163,39 @@ describe("cairn extension", () => {
 		const captures = h.execCalls.filter((args) => args[1] === "capture");
 		expect(captures[0][captures[0].indexOf("--continuation") + 1]).toBe("0");
 		expect(captures[1][captures[1].indexOf("--continuation") + 1]).toBe("1");
+	});
+
+	it("appends a checkpoint nudge to a notable tool result, preserving the original content", async () => {
+		const h = harness((sub) => (sub === "checkpoint" ? "CAIRN CHECKPOINT: ..." : ""));
+		cairnExtension(h.pi as never);
+		const result = (await h.handlers.tool_result?.(
+			{ type: "tool_result", toolName: "bash", input: { command: "pytest" }, content: [{ type: "text", text: "FAILED" }], isError: true },
+			h.ctx,
+		)) as { content: { type: string; text: string }[] } | undefined;
+		expect(result?.content).toHaveLength(2);
+		expect(result?.content[0].text).toBe("FAILED");
+		expect(result?.content[1].text).toContain("CAIRN CHECKPOINT");
+	});
+
+	it("leaves an unremarkable tool result untouched", async () => {
+		// The bridge decides what is notable; an empty reply must mean "no change",
+		// not an empty content array that would erase the tool's output.
+		const h = harness(() => "");
+		cairnExtension(h.pi as never);
+		const result = await h.handlers.tool_result?.(
+			{ type: "tool_result", toolName: "bash", input: { command: "echo hi" }, content: [{ type: "text", text: "hi" }], isError: false },
+			h.ctx,
+		);
+		expect(result).toBeUndefined();
+	});
+
+	it("recovers an exit status the CCM wrapper reported in-band", () => {
+		// cache-wrap.py exits 0 itself and prints the real status, so isError is
+		// false however badly the command failed.
+		expect(recoverExitCode("boom\n[exit 2]", false)).toBe(2);
+		expect(recoverExitCode("lines: 5000\nexit: 127\ncheck: c227", false)).toBe(127);
+		expect(recoverExitCode("all fine", false)).toBe(0);
+		expect(recoverExitCode("no marker here", true)).toBe(1);
 	});
 
 	it("allows the turn to end when enforce says nothing", async () => {
