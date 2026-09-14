@@ -45,7 +45,7 @@ already: a handler on `agent_end` that calls
 instead of stop. It has to be `agent_end` — `turn_end` messages are consumed as an
 ordinary continuation, and `agent_settled` runs after the loop has exited.
 
-## Two contracts worth knowing before editing
+## Three contracts worth knowing before editing
 
 1. **Success is stdout, not exit status.** `pi_bridge.py` wraps everything in bare
    `except Exception` and exits 0 regardless; `cch-batch.py` is exit-0 by design.
@@ -53,6 +53,12 @@ ordinary continuation, and `agent_settled` runs after the loop has exited.
 2. **Handlers must not throw.** A throw in a `tool_call` handler becomes
    "Extension failed, blocking execution" and denies the tool. Every failure is
    captured and returned as data so that a broken layer degrades to stock pi.
+3. **CCH judges the command before RTK rewrites it.** RTK turns `cat foo.ts` into
+   `rtk read foo.ts`, which matches none of the bulk-read patterns `guards.block`
+   looks for, so running RTK first disables the guards entirely — silently. Note
+   this deliberately differs from CCH's own installer, which orders RTK before CCH:
+   Claude Code hands every hook the original input, so ordering there does not chain
+   the way a pipeline does.
 
 ## Layout
 

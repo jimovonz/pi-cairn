@@ -96,3 +96,77 @@ export async function runText(
 	const result = await run(pi, command, args, options);
 	return result.ok ? result.stdout.trim() : "";
 }
+
+/**
+ * Run a command that needs data on stdin.
+ *
+ * `pi.exec` cannot do this -- it spawns with `stdio: ["ignore", "pipe", "pipe"]`,
+ * so there is no stdin to write to. The CCH interceptors and `rtk hook` are all
+ * stdin-driven JSON filters, hence this second path via node:child_process.
+ *
+ * Same contract as `run()`: never throws, never rejects.
+ */
+export async function runWithInput(
+	command: string,
+	args: string[],
+	input: string,
+	options: BridgeOptions = {},
+): Promise<BridgeResult> {
+	const { spawn } = await import("node:child_process");
+	return new Promise<BridgeResult>((resolve) => {
+		let settled = false;
+		const finish = (result: BridgeResult) => {
+			if (settled) return;
+			settled = true;
+			resolve(result);
+		};
+		const failure = (message: string): BridgeResult => ({
+			stdout: "",
+			stderr: message,
+			code: -1,
+			killed: false,
+			errored: true,
+			ok: false,
+		});
+
+		try {
+			const child = spawn(command, args, {
+				cwd: options.cwd,
+				stdio: ["pipe", "pipe", "pipe"],
+			});
+			let stdout = "";
+			let stderr = "";
+			const timer = setTimeout(() => {
+				child.kill("SIGKILL");
+				finish({ stdout, stderr, code: -1, killed: true, errored: false, ok: false });
+			}, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+
+			child.stdout.on("data", (chunk) => {
+				stdout += String(chunk);
+			});
+			child.stderr.on("data", (chunk) => {
+				stderr += String(chunk);
+			});
+			child.on("error", (error) => {
+				clearTimeout(timer);
+				finish(failure(error.message));
+			});
+			child.on("close", (code) => {
+				clearTimeout(timer);
+				finish({
+					stdout,
+					stderr,
+					code: code ?? -1,
+					killed: false,
+					errored: false,
+					ok: stdout.trim().length > 0,
+				});
+			});
+			// The child may exit before reading all of stdin; EPIPE is expected, not an error.
+			child.stdin.on("error", () => {});
+			child.stdin.end(input);
+		} catch (error) {
+			finish(failure(error instanceof Error ? error.message : String(error)));
+		}
+	});
+}
