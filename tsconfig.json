@@ -8,10 +8,9 @@
 		"noEmit": true,
 		"skipLibCheck": true,
 		"types": ["node"],
-		"baseUrl": ".",
 		"paths": {
-			"@earendil-works/pi-coding-agent": ["../pi/packages/coding-agent/src/index.ts"],
-			"@earendil-works/pi-ai": ["../pi/packages/ai/src/index.ts"]
+			"@earendil-works/pi-coding-agent": ["../pi/packages/coding-agent/dist/index.d.ts"],
+			"@earendil-works/pi-ai": ["../pi/packages/ai/dist/index.d.ts"]
 		}
 	},
 	"include": ["extensions/**/*.ts", "lib/**/*.ts", "test/**/*.ts"]

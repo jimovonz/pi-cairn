@@ -10,9 +10,16 @@ checkout — including a six-file patch to pi's core. When that checkout was del
 all of it went with it. The only piece that survived was the half that happened to
 live in another repo.
 
-So: **nothing here lives in the pi checkout.** `install.sh` symlinks into pi's
-extension directory (pi follows symlinks), and this repo stays the source of truth.
-A pi reinstall costs nothing.
+So: **nothing here lives in the pi checkout.** `install.sh` registers these files
+with pi by absolute path, and this repo stays the source of truth. A pi reinstall
+costs nothing.
+
+Registration is by path and **not** by symlinking into `~/.pi/agent/extensions`,
+even though pi discovers symlinks there. jiti resolves an extension's imports
+relative to the path it was loaded from, without dereferencing symlinks — so a
+symlinked extension resolves `typebox` and `../lib/bridge.ts` against the symlink's
+directory, where neither exists. Verified: loading via a symlink fails with
+`Cannot find module 'typebox'` while the same file loaded by its real path works.
 
 ## Design
 
@@ -54,15 +61,17 @@ extensions/cairn.ts     memory: before_agent_start + agent_end + cairn_query
 extensions/routing.ts   one ordered tool_call pipeline
 lib/bridge.ts           the only subprocess helper
 patches/                pi's own build fix, so a fresh pi clone compiles
-install.sh              symlinks extensions; --uninstall reverses it
+install.sh              registers extensions by path; --uninstall reverses it
 ```
 
 ## Install
 
 ```bash
-./install.sh
+./install.sh          # registers absolute paths in ~/.pi/agent/settings.json
 export PI_CAIRN=1
 ```
+
+`./install.sh --uninstall` reverses it. Both are idempotent.
 
 Everything is additive and off by default. To try a layer without installing:
 
