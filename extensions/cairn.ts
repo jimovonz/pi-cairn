@@ -96,6 +96,9 @@ export default function (pi: ExtensionAPI) {
 	/** Enforcement budget for the current user prompt. Reset on every new prompt. */
 	let enforcements = 0;
 
+	/** Whether this session has already received its standing context. */
+	let bootstrapped = false;
+
 	/**
 	 * The [cm] spec is a constant, so fetch it once and reuse it for the session.
 	 *
@@ -134,11 +137,23 @@ export default function (pi: ExtensionAPI) {
 		// A fresh user prompt restores the gate's budget.
 		enforcements = 0;
 
-		const [spec, context] = await Promise.all([
+		// Standing context is a once-per-session injection, mirroring the
+		// `if is_first_prompt(...)` block Claude Code runs it inside. The bridge
+		// facade is deliberately ungated, so the gate lives here. Claimed before
+		// the await so a concurrent prompt cannot double-inject.
+		const wantBootstrap = !bootstrapped;
+		bootstrapped = true;
+
+		const [spec, context, bootstrap] = await Promise.all([
 			specOnce(),
 			runText(pi, "python3", [bridge, "retrieve", "--query", event.prompt, ...identity(ctx)], {
 				timeoutMs: RETRIEVE_TIMEOUT_MS,
 			}),
+			wantBootstrap
+				? runText(pi, "python3", [bridge, "bootstrap", "--query", event.prompt, ...identity(ctx)], {
+						timeoutMs: RETRIEVE_TIMEOUT_MS,
+					})
+				: Promise.resolve(""),
 		]);
 
 		// The spec is an instruction, so it belongs in the system prompt. Retrieved
@@ -146,10 +161,17 @@ export default function (pi: ExtensionAPI) {
 		// message instead -- and stay out of the UI, since the user did not ask for them.
 		const result: BeforeAgentStartEventResult = {};
 		if (spec) result.systemPrompt = `${event.systemPrompt}\n\n${spec}`;
-		if (context) {
+
+		// Bootstrap leads (it orients the whole session), retrieval follows (it
+		// answers this prompt). Both ride as a trailing message rather than in the
+		// system prompt: bootstrap appears on one turn only, so putting it in the
+		// prompt would flap the cache prefix, and as a message it simply stays in
+		// the conversation from then on -- which is what standing context wants.
+		const injected = [bootstrap, context].filter((part) => part.length > 0).join("\n\n");
+		if (injected) {
 			result.message = {
 				customType: "cairn-context",
-				content: context,
+				content: injected,
 				display: false,
 			};
 		}

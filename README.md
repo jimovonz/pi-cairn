@@ -29,7 +29,7 @@ TypeScript here is thin glue that shells out:
 
 | Layer | Shells out to | Gate |
 |---|---|---|
-| Memory | `cairn/hooks/pi_bridge.py` (`retrieve`/`capture`/`enforce`/`spec`) | `PI_CAIRN` |
+| Memory | `cairn/hooks/pi_bridge.py` (`bootstrap`/`retrieve`/`capture`/`enforce`/`spec`) | `PI_CAIRN` |
 | Routing | `guards.block()` via CCH | `PI_ROUTING` |
 | Caching + graph footer + rules | `cache-wrap.py -- <cmd>` | `PI_CCM` |
 | Token proxy | `rtk rewrite <cmd>` | `PI_RTK` |

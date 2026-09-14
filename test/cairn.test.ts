@@ -92,6 +92,42 @@ describe("cairn extension", () => {
 		expect(result.systemPrompt).toContain("SPEC-TEXT");
 	});
 
+	it("injects standing context once per session, not on every prompt", async () => {
+		// Mirrors Claude Code's is_first_prompt gate. The bridge facade is ungated,
+		// so a bug here would re-inject the same standing context every turn.
+		const h = harness((sub) => (sub === "bootstrap" ? "<cairn_context layer=\"project-bootstrap\"/>" : ""));
+		cairnExtension(h.pi as never);
+		for (const prompt of ["one", "two", "three"]) {
+			await h.handlers.before_agent_start?.({ type: "before_agent_start", prompt, systemPrompt: "BASE" }, h.ctx);
+		}
+		expect(h.execCalls.filter((args) => args[1] === "bootstrap")).toHaveLength(1);
+	});
+
+	it("leads the injected message with bootstrap and follows with retrieval", async () => {
+		const h = harness((sub) => (sub === "bootstrap" ? "BOOT" : sub === "retrieve" ? "RECALL" : ""));
+		cairnExtension(h.pi as never);
+		const result = (await h.handlers.before_agent_start?.(
+			{ type: "before_agent_start", prompt: "one", systemPrompt: "BASE" },
+			h.ctx,
+		)) as { message?: { content: string } };
+		expect(result.message?.content).toBe("BOOT\n\nRECALL");
+	});
+
+	it("keeps standing context out of the system prompt so the cache prefix holds", async () => {
+		const h = harness((sub) => (sub === "bootstrap" ? "BOOT" : sub === "spec" ? "SPEC" : ""));
+		cairnExtension(h.pi as never);
+		const first = (await h.handlers.before_agent_start?.(
+			{ type: "before_agent_start", prompt: "one", systemPrompt: "BASE" },
+			h.ctx,
+		)) as { systemPrompt?: string };
+		const second = (await h.handlers.before_agent_start?.(
+			{ type: "before_agent_start", prompt: "two", systemPrompt: "BASE" },
+			h.ctx,
+		)) as { systemPrompt?: string };
+		expect(first.systemPrompt).not.toContain("BOOT");
+		expect(second.systemPrompt).toBe(first.systemPrompt);
+	});
+
 	it("allows the turn to end when enforce says nothing", async () => {
 		const h = harness(() => "");
 		cairnExtension(h.pi as never);
