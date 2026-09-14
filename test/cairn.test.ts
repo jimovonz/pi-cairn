@@ -128,6 +128,43 @@ describe("cairn extension", () => {
 		expect(second.systemPrompt).toBe(first.systemPrompt);
 	});
 
+	it("uses layer 1 on the first prompt and layer 1.5 thereafter", async () => {
+		const h = harness(() => "");
+		cairnExtension(h.pi as never);
+		for (const prompt of ["one", "two"]) {
+			await h.handlers.before_agent_start?.({ type: "before_agent_start", prompt, systemPrompt: "B" }, h.ctx);
+		}
+		const retrieves = h.execCalls.filter((args) => args[1] === "retrieve");
+		expect(retrieves).toHaveLength(2);
+		expect(retrieves[0]).toContain("--first");
+		expect(retrieves[1]).not.toContain("--first");
+	});
+
+	it("drains deferred reminders on every prompt and injects them last", async () => {
+		const h = harness((sub) =>
+			sub === "staged" ? "REMINDER" : sub === "retrieve" ? "RECALL" : sub === "bootstrap" ? "BOOT" : "",
+		);
+		cairnExtension(h.pi as never);
+		const result = (await h.handlers.before_agent_start?.(
+			{ type: "before_agent_start", prompt: "one", systemPrompt: "B" },
+			h.ctx,
+		)) as { message?: { content: string } };
+		expect(result.message?.content).toBe("BOOT\n\nRECALL\n\nREMINDER");
+
+		await h.handlers.before_agent_start?.({ type: "before_agent_start", prompt: "two", systemPrompt: "B" }, h.ctx);
+		expect(h.execCalls.filter((args) => args[1] === "staged")).toHaveLength(2);
+	});
+
+	it("marks an enforced retry as a continuation so it does not re-stage", async () => {
+		const h = harness((sub) => (sub === "enforce" ? "Missing." : ""));
+		cairnExtension(h.pi as never);
+		await h.handlers.agent_end?.(assistantReply("x"), h.ctx);
+		await h.handlers.agent_end?.(assistantReply("x"), h.ctx);
+		const captures = h.execCalls.filter((args) => args[1] === "capture");
+		expect(captures[0][captures[0].indexOf("--continuation") + 1]).toBe("0");
+		expect(captures[1][captures[1].indexOf("--continuation") + 1]).toBe("1");
+	});
+
 	it("allows the turn to end when enforce says nothing", async () => {
 		const h = harness(() => "");
 		cairnExtension(h.pi as never);

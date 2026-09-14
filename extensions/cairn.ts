@@ -144,16 +144,24 @@ export default function (pi: ExtensionAPI) {
 		const wantBootstrap = !bootstrapped;
 		bootstrapped = true;
 
-		const [spec, context, bootstrap] = await Promise.all([
+		const [spec, context, bootstrap, staged] = await Promise.all([
 			specOnce(),
-			runText(pi, "python3", [bridge, "retrieve", "--query", event.prompt, ...identity(ctx)], {
-				timeoutMs: RETRIEVE_TIMEOUT_MS,
-			}),
+			// --first selects layer 1 (threshold 0.30) over layer 1.5 (0.55, enriched
+			// with the last assistant excerpt), matching how the other host layers
+			// the first prompt against the ones after it.
+			runText(
+				pi,
+				"python3",
+				[bridge, "retrieve", ...(wantBootstrap ? ["--first"] : []), "--query", event.prompt, ...identity(ctx)],
+				{ timeoutMs: RETRIEVE_TIMEOUT_MS },
+			),
 			wantBootstrap
 				? runText(pi, "python3", [bridge, "bootstrap", "--query", event.prompt, ...identity(ctx)], {
 						timeoutMs: RETRIEVE_TIMEOUT_MS,
 					})
 				: Promise.resolve(""),
+			// Reminders the previous turn deferred to this one. Cheap: no embedding.
+			runText(pi, "python3", [bridge, "staged", ...identity(ctx)], { timeoutMs: CAPTURE_TIMEOUT_MS }),
 		]);
 
 		// The spec is an instruction, so it belongs in the system prompt. Retrieved
@@ -167,7 +175,9 @@ export default function (pi: ExtensionAPI) {
 		// system prompt: bootstrap appears on one turn only, so putting it in the
 		// prompt would flap the cache prefix, and as a message it simply stays in
 		// the conversation from then on -- which is what standing context wants.
-		const injected = [bootstrap, context].filter((part) => part.length > 0).join("\n\n");
+		// Same order the other host assembles: standing context orients the session,
+		// retrieval answers this prompt, deferred reminders land last.
+		const injected = [bootstrap, context, staged].filter((part) => part.length > 0).join("\n\n");
 		if (injected) {
 			result.message = {
 				customType: "cairn-context",
@@ -183,7 +193,7 @@ export default function (pi: ExtensionAPI) {
 		if (!text) return;
 
 		await withTextFile(text, async (file) => {
-			const args = ["--text-file", file, ...identity(ctx)];
+			const args = ["--text-file", file, ...identity(ctx), "--continuation", String(enforcements)];
 
 			// Capture first: even a response that fails the gate may carry entries
 			// worth keeping, and the re-prompt should not cost us them.
