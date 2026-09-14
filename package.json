@@ -1,0 +1,17 @@
+{
+	"name": "pi-cairn",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Cairn memory, CCH/CCM context compression, code graph and RTK for the pi coding agent",
+	"scripts": {
+		"check": "tsgo --noEmit",
+		"test": "vitest --run"
+	},
+	"devDependencies": {
+		"@types/node": "22.19.19",
+		"@typescript/native-preview": "7.0.0-dev.20260120.1",
+		"typescript": "5.9.3",
+		"vitest": "4.1.9"
+	}
+}
