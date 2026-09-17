@@ -143,14 +143,39 @@ describe("goal extension", () => {
 		expect(h.followUps[1]).toMatch(/Do not retry/);
 	});
 
-	it("evaluates with a separate model, not the working one", async () => {
+	it("evaluates in a separate one-shot run with thinking off", async () => {
+		// Reasoning tokens bill as output, the most expensive class, and a three-way
+		// classification needs none.
 		const h = harness("NOT_YET x");
 		goalExtension(h.pi as never);
 		await h.commands.goal?.("cond", h.ctx);
 		await h.handlers.agent_end?.(work("did work"), h.ctx);
 		const call = h.execCalls[0];
-		expect(call).toContain("--model");
 		expect(call).toContain("-p");
+		expect(call).toContain("--no-session");
+		expect(call.slice(call.indexOf("--thinking"), call.indexOf("--thinking") + 2)).toEqual(["--thinking", "off"]);
+	});
+
+	it("defaults the evaluator to the session model, not a pricier one", async () => {
+		// Haiku 4.5 costs 3.3x input and 4.2x output against deepseek-v4.1-flash on
+		// OpenRouter, so a "small fast model" default would cost more than the work.
+		const h = harness("NOT_YET x");
+		(h.ctx as { model?: { id: string } }).model = { id: "deepseek/deepseek-v4.1-flash" };
+		goalExtension(h.pi as never);
+		await h.commands.goal?.("cond", h.ctx);
+		await h.handlers.agent_end?.(work("did work"), h.ctx);
+		const call = h.execCalls[0];
+		expect(call[call.indexOf("--model") + 1]).toBe("deepseek/deepseek-v4.1-flash");
+	});
+
+	it("honours PI_GOAL_MODEL when set", async () => {
+		process.env.PI_GOAL_MODEL = "some/cheap-model";
+		const h = harness("NOT_YET x");
+		goalExtension(h.pi as never);
+		await h.commands.goal?.("cond", h.ctx);
+		await h.handlers.agent_end?.(work("did work"), h.ctx);
+		expect(h.execCalls[0][h.execCalls[0].indexOf("--model") + 1]).toBe("some/cheap-model");
+		delete process.env.PI_GOAL_MODEL;
 	});
 
 	it("pauses after consecutive turns with no tool use, keeping the goal set", async () => {

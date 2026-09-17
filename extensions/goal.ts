@@ -120,7 +120,18 @@ export default function (pi: ExtensionAPI) {
 	const flag = process.env.PI_GOAL;
 	if (flag !== "1" && flag !== "true") return;
 
-	const evalModel = process.env.PI_GOAL_MODEL ?? "anthropic/claude-haiku-4-5";
+	/**
+	 * Which model judges the verdict.
+	 *
+	 * Defaults to the session's own model rather than a nominally "small fast" one.
+	 * Upstream can assume its small model is the cheap one; here that is not true --
+	 * Haiku 4.5 on OpenRouter runs $1.00/M in and $5.00/M out against
+	 * deepseek-v4.1-flash at $0.30 and $1.20, so defaulting to it would make the
+	 * evaluator four times pricier than the work it is checking, once per turn.
+	 * Using the session model also means no second provider to configure or pin.
+	 */
+	const evalModelFor = (ctx: { model?: { id?: string } }) =>
+		process.env.PI_GOAL_MODEL ?? ctx.model?.id ?? "deepseek/deepseek-v4.1-flash";
 
 	const stateFile = (ctx: { sessionManager: { getSessionId(): string | undefined } }) =>
 		join(
@@ -179,7 +190,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			save(ctx, { condition: raw, turns: 0, lastReason: "", setAt: Date.now(), idleTurns: 0 });
-			ctx.ui.notify(`Goal set: ${raw}\n  evaluator: ${evalModel}`);
+			ctx.ui.notify(`Goal set: ${raw}\n  evaluator: ${evalModelFor(ctx)}`);
 			// Setting a goal starts a turn immediately, with the condition as the directive.
 			pi.sendUserMessage(raw);
 		},
@@ -204,7 +215,9 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const prompt = buildEvalPrompt(goal.condition, transcriptTail(event.messages));
-		const result = await run(pi, "pi", ["-p", "--no-session", "--model", evalModel, prompt], {
+		// --thinking off: a three-way classification needs no reasoning trace, and
+		// reasoning tokens bill as output, the most expensive class.
+		const result = await run(pi, "pi", ["-p", "--no-session", "--thinking", "off", "--model", evalModelFor(ctx), prompt], {
 			cwd: ctx.cwd,
 			timeoutMs: EVAL_TIMEOUT_MS,
 		});
