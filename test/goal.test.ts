@@ -57,6 +57,7 @@ function harness(evalReply: string) {
 	const commands: Record<string, (a: string, c: unknown) => Promise<void>> = {};
 	const followUps: string[] = [];
 	const notices: string[] = [];
+	const transcript: string[] = [];
 	const execCalls: string[][] = [];
 	const pi = {
 		on: (e: string, h: (ev: unknown, c: unknown) => Promise<unknown>) => { handlers[e] = h; },
@@ -67,13 +68,14 @@ function harness(evalReply: string) {
 			return { stdout: evalReply, stderr: "", code: 0, killed: false };
 		},
 		sendUserMessage: (t: string) => { followUps.push(t); },
+		sendMessage: (m: { content: string }) => { transcript.push(m.content); },
 	};
 	const ctx = {
 		cwd: "/tmp",
 		ui: { notify: (m: string) => notices.push(m) },
 		sessionManager: { getSessionId: () => "s" },
 	};
-	return { pi, ctx, handlers, commands, followUps, notices, execCalls };
+	return { pi, ctx, handlers, commands, followUps, notices, transcript, execCalls };
 }
 
 const work = (text: string) => ({ type: "agent_end", messages: [{ role: "assistant", content: [{ type: "toolCall" }, { type: "text", text }] }] });
@@ -215,6 +217,24 @@ describe("goal extension", () => {
 		goalExtension(b.pi as never);
 		await b.handlers.agent_end?.(work("t"), b.ctx);
 		expect(b.followUps[0]).toMatch(/turn 2/);
+	});
+
+	it("makes status visible in the transcript, not only as a TUI toast", async () => {
+		// ctx.ui.notify never reaches the transcript, so in -p mode a status command
+		// that only notified was indistinguishable from one that did not exist.
+		const h = harness("NOT_YET x");
+		goalExtension(h.pi as never);
+		await h.commands.goal?.("", h.ctx);
+		expect(h.notices).toContain("No goal set.");
+		expect(h.transcript).toContain("No goal set.");
+	});
+
+	it("makes clear visible in the transcript too", async () => {
+		const h = harness("NOT_YET x");
+		goalExtension(h.pi as never);
+		await h.commands.goal?.("some condition", h.ctx);
+		await h.commands.goal?.("clear", h.ctx);
+		expect(h.transcript.some((t) => /Goal cleared: some condition/.test(t))).toBe(true);
 	});
 
 	it("clears on request", async () => {

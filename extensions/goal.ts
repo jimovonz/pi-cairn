@@ -166,6 +166,20 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	/**
+	 * Report to the user on both channels.
+	 *
+	 * ctx.ui.notify is TUI-only and never reaches the transcript, so in -p mode a
+	 * status or clear produced no observable output whatsoever -- working correctly
+	 * and not existing looked identical. Every report is therefore mirrored into the
+	 * conversation as a non-triggering custom message, which is visible in any mode.
+	 */
+	type Reporter = { ui: { notify(m: string, t?: "info" | "warning" | "error"): void } };
+	const report = (ctx: Reporter, text: string, level?: "warning" | "error") => {
+		ctx.ui.notify(text, level);
+		pi.sendMessage({ customType: "goal", content: text, display: true }, { triggerTurn: false });
+	};
+
 	pi.registerCommand("goal", {
 		description: "Keep working until a condition is met. /goal <condition> | /goal | /goal clear",
 		async handler(args, ctx) {
@@ -174,28 +188,28 @@ export default function (pi: ExtensionAPI) {
 
 			if (raw === "clear") {
 				save(ctx, null);
-				ctx.ui.notify(current ? `Goal cleared: ${current.condition}` : "No goal set.");
+				report(ctx, current ? `Goal cleared: ${current.condition}` : "No goal set.");
 				return;
 			}
 			if (raw === "") {
 				if (!current) {
-					ctx.ui.notify("No goal set.");
+					report(ctx, "No goal set.");
 					return;
 				}
 				const mins = Math.round((Date.now() - current.setAt) / 60_000);
-				ctx.ui.notify(
+				report(ctx, 
 					`Goal: ${current.condition}\n  running: ${mins}m\n  turns evaluated: ${current.turns}` +
 						(current.lastReason ? `\n  last verdict: ${current.lastReason}` : ""),
 				);
 				return;
 			}
 			if (raw.length > MAX_CONDITION_CHARS) {
-				ctx.ui.notify(`Condition exceeds ${MAX_CONDITION_CHARS} characters.`, "error");
+				report(ctx, `Condition exceeds ${MAX_CONDITION_CHARS} characters.`, "error");
 				return;
 			}
 
 			save(ctx, { condition: raw, turns: 0, lastReason: "", setAt: Date.now(), idleTurns: 0 });
-			ctx.ui.notify(`Goal set: ${raw}\n  evaluator: ${evalModelFor(ctx)}`);
+			report(ctx, `Goal set: ${raw}\n  evaluator: ${evalModelFor(ctx)}`);
 			// Setting a goal starts a turn immediately, with the condition as the directive.
 			pi.sendUserMessage(raw);
 		},
@@ -212,7 +226,7 @@ export default function (pi: ExtensionAPI) {
 		if (goal.idleTurns >= STALL_LIMIT) {
 			goal.idleTurns = 0;
 			save(ctx, goal);
-			ctx.ui.notify(
+			report(ctx, 
 				`Goal paused after ${STALL_LIMIT} turns with no tool use: ${goal.condition}\nIt is still set; send a message to resume.`,
 				"warning",
 			);
@@ -236,12 +250,12 @@ export default function (pi: ExtensionAPI) {
 
 		if (verdict === "met") {
 			save(ctx, null);
-			ctx.ui.notify(`Goal achieved after ${goal.turns} turns: ${goal.condition}\n${reason}`);
+			report(ctx, `Goal achieved after ${goal.turns} turns: ${goal.condition}\n${reason}`);
 			return;
 		}
 		if (verdict === "impossible") {
 			save(ctx, null);
-			ctx.ui.notify(`Goal failed — judged impossible: ${goal.condition}\n${reason}`, "warning");
+			report(ctx, `Goal failed — judged impossible: ${goal.condition}\n${reason}`, "warning");
 			pi.sendUserMessage(
 				`The goal evaluator judged this condition impossible: ${goal.condition}\nReason: ${reason}\nExplain the situation to the user. Do not retry.`,
 				{ deliverAs: "followUp" },
