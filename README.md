@@ -34,6 +34,7 @@ TypeScript here is thin glue that shells out:
 | Caching + graph footer + rules | `cache-wrap.py -- <cmd>` | `PI_CCM` |
 | Token proxy | `rtk rewrite <cmd>` | `PI_RTK` |
 | Code-graph lookup | `cairn-graph` | `PI_GRAPH` |
+| Goal continuation | `/goal`, shell-verified | `PI_GOAL` |
 
 Wrapping bash in `cache-wrap.py` is what delivers the `[CCM_CACHED]` stub, the
 symbol menu, the `[cairn-graph: …]` footer and `.cch/rules` all at once — none of
@@ -148,6 +149,7 @@ turn 2  input 1128  cacheRead 3200  $0.0003984
 extensions/cairn.ts     memory: before_agent_start + agent_end + cairn_query
 extensions/routing.ts   one ordered tool_call pipeline
 extensions/graph.ts     code_graph lookup tool (the graph pull half)
+extensions/goal.ts      /goal: keep working until a condition holds
 lib/bridge.ts           the only subprocess helper
 patches/                pi's own build fix, so a fresh pi clone compiles
 install.sh              registers extensions by path; --uninstall reverses it

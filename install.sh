@@ -26,7 +26,7 @@ AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 SETTINGS="$AGENT_DIR/settings.json"
 
 # Load order is significant; keep cairn before routing.
-EXTENSIONS=("$REPO/extensions/cairn.ts" "$REPO/extensions/routing.ts" "$REPO/extensions/graph.ts")
+EXTENSIONS=("$REPO/extensions/cairn.ts" "$REPO/extensions/routing.ts" "$REPO/extensions/graph.ts" "$REPO/extensions/goal.ts")
 
 MODE="install"
 [[ "${1:-}" == "--uninstall" ]] && MODE="uninstall"
@@ -146,6 +146,7 @@ Every layer is OFF by default; enable what you want:
   export PI_CCM=1        # wrap bash in cache-wrap.py (stubs, graph footer, rules)
   export PI_RTK=1        # rewrite bash commands through rtk
   export PI_GRAPH=1      # expose the code_graph lookup tool to the model
+  export PI_GOAL=1       # /goal: keep working until a condition holds
 
 Try a layer without registering it (use a real path, never a symlink):
 
