@@ -117,8 +117,13 @@ export function buildEvalPrompt(condition: string, transcript: string): string {
 }
 
 export default function (pi: ExtensionAPI) {
+	// Opt-out, not opt-in. Gating registration on an env var meant /goal silently did
+	// not exist in any session started before the variable was set -- and since the
+	// process environment is fixed at exec, not even /reload recovered it. The
+	// extension is already inert until a goal is set, so the gate bought nothing and
+	// cost a command that appeared to be missing. PI_GOAL=0 still disables it.
 	const flag = process.env.PI_GOAL;
-	if (flag !== "1" && flag !== "true") return;
+	if (flag === "0" || flag === "false") return;
 
 	/**
 	 * Which model judges the verdict.

@@ -92,10 +92,18 @@ describe("goal extension", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("stays inert unless PI_GOAL is set", () => {
+	it("registers /goal by default, so the command is never silently missing", () => {
 		delete process.env.PI_GOAL;
 		const h = harness("MET fine");
 		goalExtension(h.pi as never);
+		expect(Object.keys(h.commands)).toEqual(["goal"]);
+	});
+
+	it("can still be switched off explicitly", () => {
+		process.env.PI_GOAL = "0";
+		const h = harness("MET fine");
+		goalExtension(h.pi as never);
+		expect(Object.keys(h.commands)).toHaveLength(0);
 		expect(Object.keys(h.handlers)).toHaveLength(0);
 	});
 
