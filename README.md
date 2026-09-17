@@ -34,7 +34,7 @@ TypeScript here is thin glue that shells out:
 | Caching + graph footer + rules | `cache-wrap.py -- <cmd>` | `PI_CCM` |
 | Token proxy | `rtk rewrite <cmd>` | `PI_RTK` |
 | Code-graph lookup | `cairn-graph` | `PI_GRAPH` |
-| Goal continuation | `/goal`, shell-verified | `PI_GOAL` |
+| Goal continuation | `/goal`, model-evaluated | `PI_GOAL` |
 
 Wrapping bash in `cache-wrap.py` is what delivers the `[CCM_CACHED]` stub, the
 symbol menu, the `[cairn-graph: …]` footer and `.cch/rules` all at once — none of
