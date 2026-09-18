@@ -13,6 +13,7 @@ function harness(execHandler: (subcommand: string) => string) {
 	const handlers: Handlers = {};
 	const tools: { name: string; promptSnippet?: string }[] = [];
 	const followUps: string[] = [];
+	const customMessages: { customType: string; content: string; display?: boolean }[] = [];
 	const execCalls: string[][] = [];
 
 	const pi = {
@@ -29,6 +30,9 @@ function harness(execHandler: (subcommand: string) => string) {
 		sendUserMessage(text: string) {
 			followUps.push(text);
 		},
+		sendMessage(message: { customType: string; content: string; display?: boolean }) {
+			customMessages.push(message);
+		},
 	};
 
 	const ctx = {
@@ -36,7 +40,7 @@ function harness(execHandler: (subcommand: string) => string) {
 		sessionManager: { getSessionId: () => "sess-1", getSessionFile: () => "/tmp/sess.jsonl" },
 	};
 
-	return { pi, ctx, handlers, tools, followUps, execCalls };
+	return { pi, ctx, handlers, tools, followUps, customMessages, execCalls };
 }
 
 const assistantReply = (text: string) => ({ type: "agent_end", messages: [{ role: "assistant", content: text }] });
@@ -210,6 +214,17 @@ describe("cairn extension", () => {
 		cairnExtension(h.pi as never);
 		await h.handlers.agent_end?.(assistantReply("a reply"), h.ctx);
 		expect(h.followUps).toEqual(["Missing [cm] block."]);
+	});
+
+	it("delivers retrieved memory as a hidden custom message, not a visible user message", async () => {
+		const h = harness((sub) => (sub === "enforce" ? "CAIRN CONTEXT:\n<cairn_context/>" : ""));
+		cairnExtension(h.pi as never);
+		await h.handlers.agent_end?.(assistantReply("a reply"), h.ctx);
+		// The [cm] nudge stays visible; retrieved context must not be painted in.
+		expect(h.followUps).toHaveLength(0);
+		expect(h.customMessages).toEqual([
+			{ customType: "cairn-context", content: "CAIRN CONTEXT:\n<cairn_context/>", display: false },
+		]);
 	});
 
 	it("caps enforcement so a model that never complies cannot loop forever", async () => {

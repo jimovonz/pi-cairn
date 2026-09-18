@@ -244,7 +244,21 @@ export default function (pi: ExtensionAPI) {
 			// Queued from agent_end specifically: the agent loop checks for queued
 			// messages after emitting this event and continues instead of stopping.
 			// The same call from turn_end would be absorbed as an ordinary continuation.
-			pi.sendUserMessage(reason, { deliverAs: "followUp" });
+			//
+			// The [cm] enforcement nudge stays user-visible -- it is this host's analogue
+			// of Claude Code's Stop-hook feedback. Retrieved memory is different: the
+			// `ctx:i` re-prompt carries `CAIRN CONTEXT:` XML the user did not ask for, so
+			// it rides as a hidden custom message exactly like the standing context,
+			// instead of painting the XML into the transcript. `sendUserMessage` would
+			// always render it (role "user"); only custom messages honour `display`.
+			if (reason.startsWith("CAIRN CONTEXT:")) {
+				pi.sendMessage(
+					{ customType: "cairn-context", content: reason, display: false },
+					{ deliverAs: "followUp", triggerTurn: true },
+				);
+			} else {
+				pi.sendUserMessage(reason, { deliverAs: "followUp" });
+			}
 		});
 	});
 

@@ -150,6 +150,7 @@ extensions/cairn.ts     memory: before_agent_start + agent_end + cairn_query
 extensions/routing.ts   one ordered tool_call pipeline
 extensions/graph.ts     code_graph lookup tool (the graph pull half)
 extensions/goal.ts      /goal: keep working until a condition holds
+extensions/thinking-label.ts  fills pi's collapsed-thinking header with token count + cost
 lib/bridge.ts           the only subprocess helper
 patches/                pi's own build fix, so a fresh pi clone compiles
 install.sh              registers extensions by path; --uninstall reverses it
