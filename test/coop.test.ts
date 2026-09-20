@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import coopExtension from "../extensions/coop.ts";
@@ -135,6 +135,16 @@ describe("coop extension — socket + registry (pi↔pi)", () => {
 		await waitFor(() => existsSync(join(dir, "run", "BBBB.sock")));
 		const out = await a.tools.coop_logs.execute("tc", { target: "BBBB", n: 10 }, undefined, undefined, ctx("AAAA", "/tmp/a"));
 		expect(out.content[0].text).toContain("did the thing");
+	});
+
+	it("sets status prompting during a turn and idle after agent_end", async () => {
+		const a = await start("AAAA", "/tmp/a");
+		await a.handlers.before_agent_start({ type: "before_agent_start" }, ctx("AAAA", "/tmp/a"));
+		const during = JSON.parse(readFileSync(join(dir, "peers", "AAAA.json"), "utf8")) as { status: string };
+		expect(during.status).toBe("prompting");
+		await a.handlers.agent_end({ type: "agent_end" }, ctx("AAAA", "/tmp/a"));
+		const after = JSON.parse(readFileSync(join(dir, "peers", "AAAA.json"), "utf8")) as { status: string };
+		expect(after.status).toBe("idle");
 	});
 
 	it("is inert when PI_COOP=0", () => {

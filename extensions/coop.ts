@@ -27,6 +27,7 @@ import { createServer, connect as netConnect, type Server, type Socket } from "n
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
+	AgentEndEvent,
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
 	ExtensionAPI,
@@ -354,6 +355,21 @@ export default function (pi: ExtensionAPI) {
 		return {
 			message: { customType: "coop", content: renderOffline(offline), display: false },
 		} satisfies BeforeAgentStartEventResult;
+	});
+
+	pi.on("agent_end", async (_event: AgentEndEvent, ctx: ExtensionContext) => {
+		if (!sid.current) return;
+		// status is only trustworthy if it reflects the current turn state: set to
+		// "prompting" at before_agent_start, back to "idle" here. Socket presence
+		// remains the real liveness signal; this is the busy/idle hint.
+		writePeer({
+			sessionId: sid.current,
+			pid: process.pid,
+			cwd: ctx.cwd,
+			sessionFile: ctx.sessionManager.getSessionFile() ?? "",
+			startedAt,
+			status: PASSIVE_STATUS,
+		});
 	});
 
 	pi.registerTool({
