@@ -19,7 +19,7 @@
  * turns"); there is no separate iteration cap. The safety net is stall detection:
  * several turns with no tool use returns control to you with the goal still set.
  *
- * Off unless PI_GOAL is set.
+ * On by default; PI_GOAL=0 disables it.
  */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
