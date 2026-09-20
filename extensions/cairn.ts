@@ -340,4 +340,26 @@ export default function (pi: ExtensionAPI) {
 			return { content: [{ type: "text", text: output }], details: { mode } };
 		},
 	});
+
+	// Self-reload, so the agent never again has to declare a restart impossible.
+	// A tool cannot call ctx.reload() directly, so it queues /reload-runtime as a
+	// follow-up command whose handler runs the reload (docs/extensions.md). This
+	// closes the loop: edit an extension, call reload_runtime, no manual restart.
+	pi.registerCommand("reload-runtime", {
+		description: "Reload extensions, skills, prompts, themes and context files",
+		handler: async (_args, ctx) => {
+			await ctx.reload();
+			return;
+		},
+	});
+	pi.registerTool({
+		name: "reload_runtime",
+		label: "Reload Runtime",
+		description: "Reload extensions, skills, prompts, themes and context files after editing them.",
+		parameters: Type.Object({}),
+		async execute() {
+			pi.sendUserMessage("/reload-runtime", { deliverAs: "followUp" });
+			return { content: [{ type: "text", text: "Queued /reload-runtime; extensions reload on the next turn." }], details: {} };
+		},
+	});
 }

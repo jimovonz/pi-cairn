@@ -16,6 +16,7 @@ function harness(execHandler: (subcommand: string) => string) {
 	const customMessages: { customType: string; content: string; display?: boolean }[] = [];
 	const execCalls: string[][] = [];
 	const markdownTransformers: ((md: string, ctx: { messageType: string }) => string)[] = [];
+	const commands: string[] = [];
 
 	const pi = {
 		on(event: string, handler: Handlers[string]) {
@@ -23,6 +24,9 @@ function harness(execHandler: (subcommand: string) => string) {
 		},
 		registerTool(tool: { name: string; promptSnippet?: string }) {
 			tools.push(tool);
+		},
+		registerCommand(name: string) {
+			commands.push(name);
 		},
 		registerMarkdownTransformer(transformer: (md: string, ctx: { messageType: string }) => string) {
 			markdownTransformers.push(transformer);
@@ -44,7 +48,7 @@ function harness(execHandler: (subcommand: string) => string) {
 		sessionManager: { getSessionId: () => "sess-1", getSessionFile: () => "/tmp/sess.jsonl" },
 	};
 
-	return { pi, ctx, handlers, tools, followUps, customMessages, execCalls, markdownTransformers };
+	return { pi, ctx, handlers, tools, followUps, customMessages, execCalls, markdownTransformers, commands };
 }
 
 const assistantReply = (text: string) => ({ type: "agent_end", messages: [{ role: "assistant", content: text }] });
@@ -69,7 +73,8 @@ describe("cairn extension", () => {
 		const h = harness(() => "");
 		cairnExtension(h.pi as never);
 		expect(Object.keys(h.handlers).sort()).toEqual(["agent_end", "before_agent_start", "tool_result"]);
-		expect(h.tools.map((t) => t.name)).toEqual(["cairn_query"]);
+		expect(h.tools.map((t) => t.name)).toEqual(["cairn_query", "reload_runtime"]);
+		expect(h.commands).toContain("reload-runtime");
 	});
 
 	it("strips the [cm] block from assistant markdown, leaving user markdown intact", () => {
