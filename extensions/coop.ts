@@ -1,35 +1,29 @@
 /**
- * Cross-session cooperation for pi — a pull mailbox.
+ * Cross-session cooperation for pi — a per-session control socket + live registry.
  *
- * pi sessions are separate processes that share a filesystem but no channel.
- * This adds the lowest-overhead one: sending writes a JSON file into the target
- * session's inbox; receiving drains it at before_agent_start and injects the
- * messages as a hidden custom message. The runner collects messages from every
- * extension, so this rides alongside cairn's injection rather than replacing it.
+ * pi sessions are separate processes with no channel. This gives them one that
+ * actually cooperates, modelled on Claude Code's agent manager (a live registry
+ * plus dispatch/attach/logs/lifecycle) but with no daemon: each session binds a
+ * unix socket and writes a registry sidecar. Sending connects and the receiver
+ * injects immediately — push, not a poll — optionally waking a turn.
  *
- * No daemon, no socket, no watcher: one readdir on a hook that already fires,
- * and zero context cost when the inbox is empty.
+ * Layout (root from PI_COOP_DIR, else $XDG_RUNTIME_DIR/pi-coop, else ~/.pi/agent/coop):
+ *   run/<sid>.sock        unix socket; presence = the session is live
+ *   peers/<sid>.json      {sessionId, pid, cwd, sessionFile, startedAt, status}
+ *   inbox/<sid>/*.json    offline queue when the target socket is unreachable
  *
- * Layout (root from PI_COOP_DIR, else ~/.pi/agent/coop):
- *   peers/<session_id>.json      live-session registry (written on start)
- *   inbox/<session_id>/*.json    queued messages, delivered oldest-first
- *   inbox/<session_id>/read/     consumed messages (kept for audit)
+ * Protocol: newline-delimited JSON over the socket.
+ *   -> {"op":"status"}                         <- {"ok":true, peer}
+ *   -> {"op":"send","from","text","wake":bool}  <- {"ok":true,"delivered":"turn"|"context"}
+ *   -> {"op":"log","n":20}                      <- {"ok":true,"log": "..."}
  *
- * Enabled unless PI_COOP=0.
+ * Enabled unless PI_COOP=0. Overhead: one listening fd + one sidecar file.
  *
- * Tools:    coop_send(target, text), coop_peers()
- * Commands: /coop                       — list peers
- *           /coop <session-id> <text>   — send
+ * Tools:    coop_peers(), coop_send(target, text, wake?), coop_logs(target, n?)
+ * Commands: /coop  |  /coop <session-id> <text>  |  /coop log <session-id>
  */
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	readdirSync,
-	renameSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, connect as netConnect, type Server, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -43,10 +37,12 @@ import type {
 import { Type } from "typebox";
 
 interface Peer {
-	session_id: string;
+	sessionId: string;
 	pid: number;
 	cwd: string;
-	started: string;
+	sessionFile: string;
+	startedAt: string;
+	status: string;
 }
 
 interface Msg {
@@ -56,26 +52,26 @@ interface Msg {
 	ts: string;
 }
 
-function root(): string {
-	return process.env.PI_COOP_DIR ?? join(homedir(), ".pi", "agent", "coop");
-}
+const PASSIVE_STATUS = "idle";
 
+function root(): string {
+	return (
+		process.env.PI_COOP_DIR ??
+		(process.env.XDG_RUNTIME_DIR ? join(process.env.XDG_RUNTIME_DIR, "pi-coop") : join(homedir(), ".pi", "agent", "coop"))
+	);
+}
 function enabled(): boolean {
 	const v = process.env.PI_COOP;
 	return v !== "0" && v !== "false";
 }
-
-function ensure(dir: string): void {
+function ball(dir: string): void {
 	mkdirSync(dir, { recursive: true });
 }
-
-function peerFile(sid: string): string {
-	return join(root(), "peers", `${sid}.json`);
-}
-
-function inboxDir(sid: string): string {
-	return join(root(), "inbox", sid);
-}
+const runDir = () => join(root(), "run");
+const peersDir = () => join(root(), "peers");
+const inboxDir = (sid: string) => join(root(), "inbox", sid);
+const sockPath = (sid: string) => join(runDir(), `${sid}.sock`);
+const peerPath = (sid: string) => join(peersDir(), `${sid}.json`);
 
 function alive(pid: number): boolean {
 	try {
@@ -86,45 +82,26 @@ function alive(pid: number): boolean {
 	}
 }
 
-function writePeer(sid: string, cwd: string): void {
-	if (!sid) return;
-	try {
-		ensure(join(root(), "peers"));
-		const peer: Peer = { session_id: sid, pid: process.pid, cwd, started: new Date().toISOString() };
-		writeFileSync(peerFile(sid), JSON.stringify(peer));
-	} catch {
-		/* fail open: cooperation is never load-bearing */
-	}
-}
-
-function removePeer(sid: string): void {
-	if (!sid) return;
-	try {
-		rmSync(peerFile(sid), { force: true });
-	} catch {
-		/* ignore */
-	}
-}
-
-/** Live peers. `excludeSid` drops the caller; dead registry entries are pruned. */
 function listPeers(excludeSid?: string): Peer[] {
-	const dir = join(root(), "peers");
+	const dir = peersDir();
 	if (!existsSync(dir)) return [];
-	const out: Peer[] = [];
 	let names: string[] = [];
 	try {
 		names = readdirSync(dir).filter((f) => f.endsWith(".json"));
 	} catch {
 		return [];
 	}
+	const out: Peer[] = [];
 	for (const name of names) {
 		try {
 			const peer = JSON.parse(readFileSync(join(dir, name), "utf8")) as Peer;
-			if (excludeSid && peer.session_id === excludeSid) continue;
+			if (excludeSid && peer.sessionId === excludeSid) continue;
 			if (!alive(peer.pid)) {
 				rmSync(join(dir, name), { force: true });
+				rmSync(sockPath(peer.sessionId), { force: true });
 				continue;
 			}
+			peer.status = existsSync(sockPath(peer.sessionId)) ? peer.status || PASSIVE_STATUS : "no-socket";
 			out.push(peer);
 		} catch {
 			/* skip malformed */
@@ -133,20 +110,26 @@ function listPeers(excludeSid?: string): Peer[] {
 	return out;
 }
 
-function resolveTarget(target: string, selfSid: string): { id: string; live: boolean } {
+function resolveTarget(target: string, selfSid: string): Peer | undefined {
 	const peers = listPeers(selfSid);
-	const hit = peers.find((p) => p.session_id === target || p.session_id.startsWith(target));
-	return { id: hit?.session_id ?? target, live: Boolean(hit) };
+	return peers.find((p) => p.sessionId === target || p.sessionId.startsWith(target));
 }
 
-function send(target: string, text: string, from: string, cwd?: string): void {
-	ensure(inboxDir(target));
-	const msg: Msg = { from, cwd, text, ts: new Date().toISOString() };
-	const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
-	writeFileSync(join(inboxDir(target), name), JSON.stringify(msg));
+function writePeer(peer: Peer): void {
+	try {
+		ball(peersDir());
+		writeFileSync(peerPath(peer.sessionId), JSON.stringify(peer));
+	} catch {
+		/* cooperation is never load-bearing */
+	}
 }
 
-function drain(sid: string): Msg[] {
+function queueOffline(target: string, msg: Msg): void {
+	ball(inboxDir(target));
+	writeFileSync(join(inboxDir(target), `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`), JSON.stringify(msg));
+}
+
+function drainOffline(sid: string): Msg[] {
 	const dir = inboxDir(sid);
 	if (!existsSync(dir)) return [];
 	let files: string[] = [];
@@ -160,22 +143,73 @@ function drain(sid: string): Msg[] {
 		try {
 			msgs.push(JSON.parse(readFileSync(join(dir, name), "utf8")) as Msg);
 			const readDir = join(dir, "read");
-			ensure(readDir);
+			ball(readDir);
 			renameSync(join(dir, name), join(readDir, name));
 		} catch {
-			/* skip malformed; leave the file for inspection */
+			/* skip malformed */
 		}
 	}
 	return msgs;
 }
 
-function render(msgs: Msg[]): string {
-	const lines = msgs.map(
-		(m) => `- from ${m.from}${m.cwd ? ` (${m.cwd})` : ""} at ${m.ts}: ${m.text}`,
-	);
+/** Request/reply against a peer's socket. Resolves null on any failure. */
+function rpc(target: Peer, payload: unknown, timeoutMs = 1500): Promise<string | null> {
+	return new Promise((resolve) => {
+		let done = false;
+		const finish = (v: string | null) => {
+			if (!done) {
+				done = true;
+				sock.destroy();
+				resolve(v);
+			}
+		};
+		const sock = netConnect(sockPath(target.sessionId));
+		let buf = "";
+		sock.setTimeout(timeoutMs);
+		sock.on("connect", () => sock.write(JSON.stringify(payload) + "\n"));
+		sock.on("data", (d: Buffer) => {
+			buf += d.toString("utf8");
+			const nl = buf.indexOf("\n");
+			if (nl >= 0) finish(buf.slice(0, nl));
+		});
+		sock.on("timeout", () => finish(null));
+		sock.on("error", () => finish(null));
+	});
+}
+
+function tailLog(sessionFile: string, n: number): string {
+	try {
+		const raw = readFileSync(sessionFile, "utf8").trimEnd().split("\n");
+		const lines = raw.slice(Math.max(0, raw.length - n));
+		const out: string[] = [];
+		for (const line of lines) {
+			try {
+				const e = JSON.parse(line) as { type?: string; message?: { role?: string; content?: unknown } };
+				const role = e?.message?.role ?? e?.type ?? "?";
+				let text = "";
+				const c = e?.message?.content;
+				if (typeof c === "string") text = c;
+				else if (Array.isArray(c)) {
+					text = c
+						.map((b) => (b && typeof b === "object" && "text" in b ? String((b as { text?: unknown }).text ?? "") : ""))
+						.join(" ");
+				}
+				out.push(`${role}: ${text.replace(/\s+/g, " ").slice(0, 300)}`);
+			} catch {
+				/* skip non-JSON */
+			}
+		}
+		return out.join("\n") || "(no readable turns)";
+	} catch (e) {
+		return `(log unavailable: ${String(e)})`;
+	}
+}
+
+function renderOffline(msgs: Msg[]): string {
+	const lines = msgs.map((m) => `- from ${m.from}${m.cwd ? ` (${m.cwd})` : ""} at ${m.ts}: ${m.text}`);
 	const senders = [...new Set(msgs.map((m) => m.from))].join(", ");
 	return (
-		"COOP MESSAGES from other pi sessions (reply with the coop_send tool to a sender id below):\n" +
+		"COOP MESSAGES from other pi sessions (reply with the coop_send tool):\n" +
 		lines.join("\n") +
 		`\nSenders: ${senders}`
 	);
@@ -184,90 +218,273 @@ function render(msgs: Msg[]): string {
 export default function (pi: ExtensionAPI) {
 	if (!enabled()) return;
 
+	const sid = { current: "" };
+	let server: Server | undefined;
+	let startedAt = new Date().toISOString();
+
+	const inject = (from: string, text: string, wake: boolean): "turn" | "context" | "failed" => {
+		const body = `COOP MESSAGE from session ${from}:\n${text}`;
+		if (wake) {
+			// Always triggers a turn. deliverAs is only valid while streaming; try
+			// idle first, then streaming. On any failure fall back to context.
+			try {
+				pi.sendUserMessage(body);
+				return "turn";
+			} catch {
+				try {
+					pi.sendUserMessage(body, { deliverAs: "followUp" });
+					return "turn";
+				} catch {
+					/* fall through */
+				}
+			}
+		}
+		try {
+			pi.sendMessage({ customType: "coop", content: body, display: false }, { deliverAs: "nextTurn" });
+			return "context";
+		} catch {
+			return "failed";
+		}
+	};
+
+	const handle = (raw: unknown): unknown => {
+		const req = raw as { op?: string; from?: string; text?: string; wake?: boolean; n?: number };
+		if (req.op === "status") {
+			return { ok: true, peer: readPeer(sid.current) };
+		}
+		if (req.op === "send") {
+			if (!req.text) return { ok: false, error: "empty text" };
+			const delivered = inject(req.from ?? "unknown", String(req.text), Boolean(req.wake));
+			return { ok: delivered !== "failed", delivered };
+		}
+		if (req.op === "log") {
+			const p = readPeer(sid.current);
+			return { ok: true, log: p ? tailLog(p.sessionFile, Math.max(1, Math.min(100, req.n ?? 20))) : "(no session file)" };
+		}
+		return { ok: false, error: `unknown op ${req.op}` };
+	};
+
+	const startServer = (id: string) => {
+		ball(runDir());
+		try {
+			rmSync(sockPath(id), { force: true }); // stale socket from a crashed run
+		} catch {
+			/* ignore */
+		}
+		server = createServer((sock: Socket) => {
+			let buf = "";
+			sock.on("data", (d: Buffer) => {
+				buf += d.toString("utf8");
+				let nl = buf.indexOf("\n");
+				while (nl >= 0) {
+					const line = buf.slice(0, nl);
+					buf = buf.slice(nl + 1);
+					nl = buf.indexOf("\n");
+					try {
+						sock.write(JSON.stringify(handle(JSON.parse(line))) + "\n");
+					} catch (e) {
+						sock.write(JSON.stringify({ ok: false, error: String(e) }) + "\n");
+					}
+				}
+			});
+			sock.on("error", () => {
+				/* peer vanished mid-write; ignore */
+			});
+		});
+		server.on("error", () => {
+			/* another session already owns the socket; cooperation is best-effort */
+		});
+		try {
+			server.listen(sockPath(id));
+		} catch {
+			/* ignore */
+		}
+	};
+
+	const stopServer = () => {
+		try {
+			server?.close();
+		} catch {
+			/* ignore */
+		}
+		try {
+			rmSync(sockPath(sid.current), { force: true });
+		} catch {
+			/* ignore */
+		}
+	};
+
 	pi.on("session_start", async (_event: SessionStartEvent, ctx: ExtensionContext) => {
-		writePeer(ctx.sessionManager.getSessionId() ?? "", ctx.cwd);
+		sid.current = ctx.sessionManager.getSessionId() ?? "";
+		if (!sid.current) return;
+		startedAt = new Date().toISOString();
+		writePeer({
+			sessionId: sid.current,
+			pid: process.pid,
+			cwd: ctx.cwd,
+			sessionFile: ctx.sessionManager.getSessionFile() ?? "",
+			startedAt,
+			status: PASSIVE_STATUS,
+		});
+		startServer(sid.current);
 	});
 
-	pi.on("session_shutdown", async (_event: SessionShutdownEvent, ctx: ExtensionContext) => {
-		removePeer(ctx.sessionManager.getSessionId() ?? "");
+	pi.on("session_shutdown", async (_event: SessionShutdownEvent, _ctx: ExtensionContext) => {
+		stopServer();
+		try {
+			rmSync(peerPath(sid.current), { force: true });
+		} catch {
+			/* ignore */
+		}
 	});
 
 	pi.on("before_agent_start", async (_event: BeforeAgentStartEvent, ctx: ExtensionContext) => {
-		const id = ctx.sessionManager.getSessionId() ?? "";
-		if (!id) return undefined;
-		writePeer(id, ctx.cwd); // refresh cwd/pid in case of a resumed session
-		const msgs = drain(id);
-		if (msgs.length === 0) return undefined;
-		const result: BeforeAgentStartEventResult = {
-			message: { customType: "coop", content: render(msgs), display: false },
-		};
-		return result;
+		if (!sid.current) sid.current = ctx.sessionManager.getSessionId() ?? "";
+		if (!sid.current) return undefined;
+		writePeer({
+			sessionId: sid.current,
+			pid: process.pid,
+			cwd: ctx.cwd,
+			sessionFile: ctx.sessionManager.getSessionFile() ?? "",
+			startedAt,
+			status: "prompting",
+		});
+		const offline = drainOffline(sid.current);
+		if (offline.length === 0) return undefined;
+		return {
+			message: { customType: "coop", content: renderOffline(offline), display: false },
+		} satisfies BeforeAgentStartEventResult;
+	});
+
+	pi.registerTool({
+		name: "coop_peers",
+		label: "Coop Peers",
+		description: "List other live pi sessions (session id, cwd, pid, status).",
+		parameters: Type.Object({}),
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			const peers = listPeers(ctx.sessionManager.getSessionId() ?? sid.current);
+			const text = peers.length
+				? peers.map((p) => `${p.sessionId}  pid=${p.pid}  status=${p.status}  ${p.cwd}`).join("\n")
+				: "No live peer pi sessions.";
+			return { content: [{ type: "text" as const, text }], details: {} };
+		},
 	});
 
 	pi.registerTool({
 		name: "coop_send",
 		label: "Coop Send",
 		description:
-			"Send a message to another live pi session (session id or unique prefix). " +
-			"Use coop_peers to list targets. Delivered on the target's next prompt.",
+			"Send a message to another live pi session (id or unique prefix). Delivered to its socket " +
+			"immediately; set wake=true to make it act on the message now, else it arrives as context " +
+			"on its next turn. Falls back to a durable inbox if the target is not running.",
 		parameters: Type.Object({
 			target: Type.String({ description: "target session id, or a unique prefix" }),
 			text: Type.String({ description: "message text" }),
+			wake: Type.Optional(Type.Boolean({ description: "trigger a turn in the target (default false)" })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const from = ctx.sessionManager.getSessionId() ?? "";
-			const { id, live } = resolveTarget(params.target, from);
-			send(id, params.text, from, ctx.cwd);
+			const from = ctx.sessionManager.getSessionId() ?? sid.current;
+			const self = from;
+			const peer = resolveTarget(params.target, self);
+			const msg: Msg = { from, cwd: ctx.cwd, text: params.text, ts: new Date().toISOString() };
+			if (peer) {
+				const reply = await rpc(peer, { op: "send", from, text: params.text, wake: Boolean(params.wake) });
+				if (reply) {
+					try {
+						const r = JSON.parse(reply) as { delivered?: string; ok?: boolean };
+						if (r.ok) {
+							return {
+								content: [{ type: "text" as const, text: `Delivered to ${peer.sessionId} (${r.delivered ?? "ok"}).` }],
+								details: { target: peer.sessionId, delivered: r.delivered },
+							};
+						}
+					} catch {
+						/* fall through to offline */
+					}
+				}
+			}
+			queueOffline(peer?.sessionId ?? params.target, msg);
 			return {
 				content: [
 					{
 						type: "text" as const,
-						text: `Queued coop message for ${id}${live ? "" : " (no live peer matched; it will be delivered if that session runs)"}.`,
+						text: `Queued offline for ${peer?.sessionId ?? params.target} (no live socket; delivered when that session next runs).`,
 					},
 				],
-				details: { target: id, live },
+				details: { target: peer?.sessionId ?? params.target, offline: true },
 			};
 		},
 	});
 
 	pi.registerTool({
-		name: "coop_peers",
-		label: "Coop Peers",
-		description: "List other live pi sessions on this machine (session id, cwd, pid).",
-		parameters: Type.Object({}),
-		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-			const peers = listPeers(ctx.sessionManager.getSessionId() ?? "");
-			const text = peers.length
-				? peers.map((p) => `${p.session_id}  pid=${p.pid}  ${p.cwd}  since ${p.started}`).join("\n")
-				: "No live peer pi sessions.";
-			return { content: [{ type: "text" as const, text }], details: {} };
+		name: "coop_logs",
+		label: "Coop Logs",
+		description: "Read the recent turns of another live pi session.",
+		parameters: Type.Object({
+			target: Type.String({ description: "target session id, or a unique prefix" }),
+			n: Type.Optional(Type.Number({ description: "how many recent entries (default 20)" })),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const self = ctx.sessionManager.getSessionId() ?? sid.current;
+			const peer = resolveTarget(params.target, self);
+			if (!peer) {
+				return { content: [{ type: "text" as const, text: `No live peer matching ${params.target}.` }], details: {} };
+			}
+			const reply = await rpc(peer, { op: "log", n: params.n ?? 20 });
+			let log = "(unavailable)";
+			if (reply) {
+				try {
+					log = (JSON.parse(reply) as { log?: string }).log ?? log;
+				} catch {
+					/* ignore */
+				}
+			}
+			return { content: [{ type: "text" as const, text: log }], details: { target: peer.sessionId } };
 		},
 	});
 
 	pi.registerCommand("coop", {
-		description: "coop — list peer sessions; coop <session-id> <text> — send a message",
+		description: "coop — peers | coop <session-id> <text> | coop log <session-id>",
 		handler: async (args, ctx) => {
+			const self = ctx.sessionManager.getSessionId() ?? sid.current;
 			const parts = (args ?? "").trim().split(/\s+/).filter(Boolean);
-			const selfSid = ctx.sessionManager.getSessionId() ?? "";
-			if (parts.length === 0 || parts[0] === "peers") {
-				const peers = listPeers(selfSid);
+			if (parts.length === 0) {
+				const peers = listPeers(self);
 				ctx.ui.notify(
 					peers.length
-						? peers.map((p) => `${p.session_id.slice(0, 8)}  ${p.cwd}`).join("\n")
+						? peers.map((p) => `${p.sessionId.slice(0, 8)}  ${p.status}  ${p.cwd}`).join("\n")
 						: "No live peer pi sessions.",
 					"info",
 				);
 				return;
 			}
+			if (parts[0] === "log" && parts[1]) {
+				const peer = resolveTarget(parts[1], self);
+				ctx.ui.notify(peer ? tailLog(peer.sessionFile, 12) : `No live peer matching ${parts[1]}`, "info");
+				return;
+			}
 			const target = parts[0];
 			const text = parts.slice(1).join(" ");
 			if (!text) {
-				ctx.ui.notify("usage: /coop <session-id> <text>", "warning");
+				ctx.ui.notify("usage: /coop <session-id> <text> | /coop log <session-id>", "warning");
 				return;
 			}
-			const { id, live } = resolveTarget(target, selfSid);
-			send(id, text, selfSid, ctx.cwd);
-			ctx.ui.notify(`Queued coop message for ${id}${live ? "" : " (no live peer matched)"}`, "info");
+			const peer = resolveTarget(target, self);
+			const reply = peer ? await rpc(peer, { op: "send", from: self, text, wake: false }) : null;
+			if (reply) {
+				ctx.ui.notify(`Delivered to ${peer?.sessionId}.`, "info");
+			} else {
+				queueOffline(peer?.sessionId ?? target, { from: self, cwd: ctx.cwd, text, ts: new Date().toISOString() });
+				ctx.ui.notify(`Queued offline for ${peer?.sessionId ?? target}.`, "info");
+			}
 		},
 	});
+}
+
+function readPeer(sid: string): Peer | undefined {
+	try {
+		return JSON.parse(readFileSync(peerPath(sid), "utf8")) as Peer;
+	} catch {
+		return undefined;
+	}
 }
