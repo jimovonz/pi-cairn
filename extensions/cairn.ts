@@ -44,6 +44,20 @@ const QUERY_TIMEOUT_MS = 45_000;
  */
 const MAX_ENFORCEMENTS_PER_PROMPT = 2;
 
+/**
+ * Operating rule injected into the system prompt every session. It is the
+ * pi-side home for the "do not self-limit" rule (mirrored in the global rules
+ * file for the Claude Code host): classify a limitation as physical / policy /
+ * not-checked before voicing it, and never report the third as the first.
+ */
+const OPERATING_RULES = [
+	"Never report a limitation without classifying it: physical (truly impossible with the primitives you have), policy (possible but needs the user's approval), or not-checked (you have not worked out how).",
+	"Only the first is \"I cannot\". Reporting the third as the first is a false blocker.",
+	"You run as a full user account on a real machine with root via sudo. Before declaring something impossible, enumerate the primitives: signals, detached processes (setsid, systemd-run --user, nohup), files and inotifywait, cron/at/systemd timers, pty injection (xdotool on X11), sockets, installs.",
+	"\"The tool requires a restart\" is a convention, not a wall -- find the mechanism (reload, or a detached process that kills and respawns). Attempt it (with approval for anything destructive) rather than asserting incapability.",
+	"Surface the option space: the user cannot ask for a mechanism they do not know exists, so when a task has a system-level dimension, enumerate the primitives that apply (process control, setsid/nohup, systemd-run --user, timers, .path units, pty/X11 via xdotool, unix sockets/inotifywait, overlayfs, sudo/root) and present the options -- including ones not asked for -- with a risk label, instead of silently defaulting to the documented path.",
+].join(" ");
+
 function cairnHome(): string {
 	return process.env.CAIRN_HOME ?? join(homedir(), "Projects", "cairn");
 }
@@ -118,6 +132,18 @@ export default function (pi: ExtensionAPI) {
 	const bridge = join(cairnHome(), "hooks", "pi_bridge.py");
 	const queryScript = join(cairnHome(), "cairn", "query.py");
 
+	// The assistant's [cm] block is a CommonMark link-definition, which pi's
+	// Markdown renderer only hides when it lexes as a clean `def` token. An
+	// apostrophe in a value (or a missing blank line above it) demotes it to a
+	// paragraph and the whole block paints into the transcript. Strip it at the
+	// display layer so invisibility does not depend on JSON escaping -- the
+	// pi-side analogue of cairn/proxy/server.py's response stripping.
+	const stripMemoryBlocks = (markdown: string): string =>
+		markdown.replace(/^[ \t]*\[(?:cm|cairn-memory)\]:.*(?:\n|$)/gm, "");
+	pi.registerMarkdownTransformer((markdown, ctx) =>
+		ctx.messageType === "assistant" ? stripMemoryBlocks(markdown) : markdown,
+	);
+
 	/** Enforcement budget for the current user prompt. Reset on every new prompt. */
 	let enforcements = 0;
 
@@ -156,6 +182,10 @@ export default function (pi: ExtensionAPI) {
 		ctx.sessionManager.getSessionFile() ?? "",
 		"--cwd",
 		ctx.cwd,
+		// Stamped into the memory's source_ref as pi:<model>:<gen-version> so a
+		// pi-written memory stays attributable and bulk-retractable.
+		"--model",
+		ctx.model?.id ?? "",
 	];
 
 	pi.on("before_agent_start", async (event: BeforeAgentStartEvent, ctx: ExtensionContext) => {
@@ -193,7 +223,8 @@ export default function (pi: ExtensionAPI) {
 		// memories are data about this conversation, so they ride alongside the user
 		// message instead -- and stay out of the UI, since the user did not ask for them.
 		const result: BeforeAgentStartEventResult = {};
-		if (spec) result.systemPrompt = `${event.systemPrompt}\n\n${spec}`;
+		const injectedRules = `${spec}\n\n${OPERATING_RULES}`.trim();
+		if (injectedRules) result.systemPrompt = `${event.systemPrompt}\n\n${injectedRules}`;
 
 		// Bootstrap leads (it orients the whole session), retrieval follows (it
 		// answers this prompt). Both ride as a trailing message rather than in the
@@ -278,13 +309,23 @@ export default function (pi: ExtensionAPI) {
 			output: { exitCode: recoverExitCode(text, event.isError), stdout: text },
 		});
 
-		const nudge = await withTextFile(payload, (file) =>
-			runText(pi, "python3", [bridge, "checkpoint", "--text-file", file, ...identity(ctx)], {
-				timeoutMs: CAPTURE_TIMEOUT_MS,
-			}),
-		);
-		if (!nudge) return undefined;
-		return { content: [...(event.content ?? []), { type: "text" as const, text: `\n\n${nudge}` }] };
+		// Two injections on the same payload. `pretool` serves file-keyed
+		// gotchas/corrections plus structural context, reusing pretool_hook so pi
+		// matches Claude Code's per-file path; `checkpoint` is the mid-response
+		// memory nudge. Gotchas lead -- they are the actionable warning.
+		const injected = await withTextFile(payload, async (file) => {
+			const [fileCtx, nudge] = await Promise.all([
+				runText(pi, "python3", [bridge, "pretool", "--text-file", file, ...identity(ctx)], {
+					timeoutMs: CAPTURE_TIMEOUT_MS,
+				}),
+				runText(pi, "python3", [bridge, "checkpoint", "--text-file", file, ...identity(ctx)], {
+					timeoutMs: CAPTURE_TIMEOUT_MS,
+				}),
+			]);
+			return [fileCtx, nudge].filter((part) => part && part.length > 0).join("\n\n");
+		});
+		if (!injected) return undefined;
+		return { content: [...(event.content ?? []), { type: "text" as const, text: `\n\n${injected}` }] };
 	});
 
 	pi.registerTool({
@@ -322,6 +363,28 @@ export default function (pi: ExtensionAPI) {
 			});
 			const output = result.ok ? result.stdout.trim() : "No matching memories.";
 			return { content: [{ type: "text", text: output }], details: { mode } };
+		},
+	});
+
+	// Self-reload, so the agent never again has to declare a restart impossible.
+	// A tool cannot call ctx.reload() directly, so it queues /reload-runtime as a
+	// follow-up command whose handler runs the reload (docs/extensions.md). This
+	// closes the loop: edit an extension, call reload_runtime, no manual restart.
+	pi.registerCommand("reload-runtime", {
+		description: "Reload extensions, skills, prompts, themes and context files",
+		handler: async (_args, ctx) => {
+			await ctx.reload();
+			return;
+		},
+	});
+	pi.registerTool({
+		name: "reload_runtime",
+		label: "Reload Runtime",
+		description: "Reload extensions, skills, prompts, themes and context files after editing them.",
+		parameters: Type.Object({}),
+		async execute() {
+			pi.sendUserMessage("/reload-runtime", { deliverAs: "followUp" });
+			return { content: [{ type: "text", text: "Queued /reload-runtime; extensions reload on the next turn." }], details: {} };
 		},
 	});
 }

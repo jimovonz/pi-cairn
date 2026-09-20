@@ -15,6 +15,8 @@ function harness(execHandler: (subcommand: string) => string) {
 	const followUps: string[] = [];
 	const customMessages: { customType: string; content: string; display?: boolean }[] = [];
 	const execCalls: string[][] = [];
+	const markdownTransformers: ((md: string, ctx: { messageType: string }) => string)[] = [];
+	const commands: string[] = [];
 
 	const pi = {
 		on(event: string, handler: Handlers[string]) {
@@ -22,6 +24,12 @@ function harness(execHandler: (subcommand: string) => string) {
 		},
 		registerTool(tool: { name: string; promptSnippet?: string }) {
 			tools.push(tool);
+		},
+		registerCommand(name: string) {
+			commands.push(name);
+		},
+		registerMarkdownTransformer(transformer: (md: string, ctx: { messageType: string }) => string) {
+			markdownTransformers.push(transformer);
 		},
 		async exec(_command: string, args: string[]) {
 			execCalls.push(args);
@@ -40,7 +48,7 @@ function harness(execHandler: (subcommand: string) => string) {
 		sessionManager: { getSessionId: () => "sess-1", getSessionFile: () => "/tmp/sess.jsonl" },
 	};
 
-	return { pi, ctx, handlers, tools, followUps, customMessages, execCalls };
+	return { pi, ctx, handlers, tools, followUps, customMessages, execCalls, markdownTransformers, commands };
 }
 
 const assistantReply = (text: string) => ({ type: "agent_end", messages: [{ role: "assistant", content: text }] });
@@ -65,7 +73,22 @@ describe("cairn extension", () => {
 		const h = harness(() => "");
 		cairnExtension(h.pi as never);
 		expect(Object.keys(h.handlers).sort()).toEqual(["agent_end", "before_agent_start", "tool_result"]);
-		expect(h.tools.map((t) => t.name)).toEqual(["cairn_query"]);
+		expect(h.tools.map((t) => t.name)).toEqual(["cairn_query", "reload_runtime"]);
+		expect(h.commands).toContain("reload-runtime");
+	});
+
+	it("strips the [cm] block from assistant markdown, leaving user markdown intact", () => {
+		const h = harness(() => "");
+		cairnExtension(h.pi as never);
+		expect(h.markdownTransformers).toHaveLength(1);
+		const transform = h.markdownTransformers[0];
+		// The apostrophe is the exact failure that made the block lex as a paragraph.
+		const assistant = "Done.\n\n[cm]: # '{\"c\":\"it does not parse\"}'\n";
+		const stripped = transform(assistant, { messageType: "assistant" });
+		expect(stripped).not.toContain("[cm]");
+		expect(stripped).toContain("Done.");
+		const asUser = "[cm]: # '{\"ok\":true}'";
+		expect(transform(asUser, { messageType: "user" })).toBe(asUser);
 	});
 
 	it("gives cairn_query a promptSnippet so the model is told it exists", () => {
@@ -179,6 +202,33 @@ describe("cairn extension", () => {
 		expect(result?.content).toHaveLength(2);
 		expect(result?.content[0].text).toBe("FAILED");
 		expect(result?.content[1].text).toContain("CAIRN CHECKPOINT");
+	});
+
+	it("injects file-keyed context from pretool ahead of the checkpoint nudge", async () => {
+		const h = harness((sub) => {
+			if (sub === "pretool") return "CAIRN GOTCHA: do not X";
+			if (sub === "checkpoint") return "CAIRN CHECKPOINT: ...";
+			return "";
+		});
+		cairnExtension(h.pi as never);
+		const result = (await h.handlers.tool_result?.(
+			{ type: "tool_result", toolName: "read", input: { file_path: "x.ts" }, content: [{ type: "text", text: "file" }], isError: false },
+			h.ctx,
+		)) as { content: { type: string; text: string }[] } | undefined;
+		expect(result?.content).toHaveLength(2);
+		const injected = result?.content[1].text ?? "";
+		expect(injected).toContain("CAIRN GOTCHA");
+		expect(injected.indexOf("CAIRN GOTCHA")).toBeLessThan(injected.indexOf("CAIRN CHECKPOINT"));
+	});
+
+	it("injects pretool context even when the checkpoint is silent", async () => {
+		const h = harness((sub) => (sub === "pretool" ? "CAIRN GOTCHA: only" : ""));
+		cairnExtension(h.pi as never);
+		const result = (await h.handlers.tool_result?.(
+			{ type: "tool_result", toolName: "read", input: { file_path: "x.ts" }, content: [{ type: "text", text: "file" }], isError: false },
+			h.ctx,
+		)) as { content: { type: string; text: string }[] } | undefined;
+		expect(result?.content[1].text).toContain("CAIRN GOTCHA: only");
 	});
 
 	it("leaves an unremarkable tool result untouched", async () => {
