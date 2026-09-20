@@ -55,6 +55,7 @@ const OPERATING_RULES = [
 	"Only the first is \"I cannot\". Reporting the third as the first is a false blocker.",
 	"You run as a full user account on a real machine with root via sudo. Before declaring something impossible, enumerate the primitives: signals, detached processes (setsid, systemd-run --user, nohup), files and inotifywait, cron/at/systemd timers, pty injection (xdotool on X11), sockets, installs.",
 	"\"The tool requires a restart\" is a convention, not a wall -- find the mechanism (reload, or a detached process that kills and respawns). Attempt it (with approval for anything destructive) rather than asserting incapability.",
+	"Surface the option space: the user cannot ask for a mechanism they do not know exists, so when a task has a system-level dimension, enumerate the primitives that apply (process control, setsid/nohup, systemd-run --user, timers, .path units, pty/X11 via xdotool, unix sockets/inotifywait, overlayfs, sudo/root) and present the options -- including ones not asked for -- with a risk label, instead of silently defaulting to the documented path.",
 ].join(" ");
 
 function cairnHome(): string {
