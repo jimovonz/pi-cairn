@@ -15,6 +15,7 @@ function harness(execHandler: (subcommand: string) => string) {
 	const followUps: string[] = [];
 	const customMessages: { customType: string; content: string; display?: boolean }[] = [];
 	const execCalls: string[][] = [];
+	const markdownTransformers: ((md: string, ctx: { messageType: string }) => string)[] = [];
 
 	const pi = {
 		on(event: string, handler: Handlers[string]) {
@@ -22,6 +23,9 @@ function harness(execHandler: (subcommand: string) => string) {
 		},
 		registerTool(tool: { name: string; promptSnippet?: string }) {
 			tools.push(tool);
+		},
+		registerMarkdownTransformer(transformer: (md: string, ctx: { messageType: string }) => string) {
+			markdownTransformers.push(transformer);
 		},
 		async exec(_command: string, args: string[]) {
 			execCalls.push(args);
@@ -40,7 +44,7 @@ function harness(execHandler: (subcommand: string) => string) {
 		sessionManager: { getSessionId: () => "sess-1", getSessionFile: () => "/tmp/sess.jsonl" },
 	};
 
-	return { pi, ctx, handlers, tools, followUps, customMessages, execCalls };
+	return { pi, ctx, handlers, tools, followUps, customMessages, execCalls, markdownTransformers };
 }
 
 const assistantReply = (text: string) => ({ type: "agent_end", messages: [{ role: "assistant", content: text }] });
@@ -66,6 +70,20 @@ describe("cairn extension", () => {
 		cairnExtension(h.pi as never);
 		expect(Object.keys(h.handlers).sort()).toEqual(["agent_end", "before_agent_start", "tool_result"]);
 		expect(h.tools.map((t) => t.name)).toEqual(["cairn_query"]);
+	});
+
+	it("strips the [cm] block from assistant markdown, leaving user markdown intact", () => {
+		const h = harness(() => "");
+		cairnExtension(h.pi as never);
+		expect(h.markdownTransformers).toHaveLength(1);
+		const transform = h.markdownTransformers[0];
+		// The apostrophe is the exact failure that made the block lex as a paragraph.
+		const assistant = "Done.\n\n[cm]: # '{\"c\":\"it does not parse\"}'\n";
+		const stripped = transform(assistant, { messageType: "assistant" });
+		expect(stripped).not.toContain("[cm]");
+		expect(stripped).toContain("Done.");
+		const asUser = "[cm]: # '{\"ok\":true}'";
+		expect(transform(asUser, { messageType: "user" })).toBe(asUser);
 	});
 
 	it("gives cairn_query a promptSnippet so the model is told it exists", () => {

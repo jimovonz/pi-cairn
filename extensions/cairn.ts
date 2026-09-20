@@ -118,6 +118,18 @@ export default function (pi: ExtensionAPI) {
 	const bridge = join(cairnHome(), "hooks", "pi_bridge.py");
 	const queryScript = join(cairnHome(), "cairn", "query.py");
 
+	// The assistant's [cm] block is a CommonMark link-definition, which pi's
+	// Markdown renderer only hides when it lexes as a clean `def` token. An
+	// apostrophe in a value (or a missing blank line above it) demotes it to a
+	// paragraph and the whole block paints into the transcript. Strip it at the
+	// display layer so invisibility does not depend on JSON escaping -- the
+	// pi-side analogue of cairn/proxy/server.py's response stripping.
+	const stripMemoryBlocks = (markdown: string): string =>
+		markdown.replace(/^[ \t]*\[(?:cm|cairn-memory)\]:.*(?:\n|$)/gm, "");
+	pi.registerMarkdownTransformer((markdown, ctx) =>
+		ctx.messageType === "assistant" ? stripMemoryBlocks(markdown) : markdown,
+	);
+
 	/** Enforcement budget for the current user prompt. Reset on every new prompt. */
 	let enforcements = 0;
 
@@ -156,6 +168,10 @@ export default function (pi: ExtensionAPI) {
 		ctx.sessionManager.getSessionFile() ?? "",
 		"--cwd",
 		ctx.cwd,
+		// Stamped into the memory's source_ref as pi:<model>:<gen-version> so a
+		// pi-written memory stays attributable and bulk-retractable.
+		"--model",
+		ctx.model?.id ?? "",
 	];
 
 	pi.on("before_agent_start", async (event: BeforeAgentStartEvent, ctx: ExtensionContext) => {
