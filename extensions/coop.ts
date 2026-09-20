@@ -375,6 +375,13 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "coop_peers",
 		label: "Coop Peers",
+		// Without promptSnippet the tool never enters the system prompt's tool
+		// list, so the model never learns it exists.
+		promptSnippet: "coop_peers - list other live pi sessions on this machine",
+		promptGuidelines: [
+			"Call coop_peers when work might be shared with another pi session, and before assuming you are the only one working on this checkout.",
+			"Use the returned session ids with coop_send / coop_logs.",
+		],
 		description: "List other live pi sessions (session id, cwd, pid, status).",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
@@ -389,6 +396,11 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "coop_send",
 		label: "Coop Send",
+		promptSnippet: "coop_send - send a message to another live pi session",
+		promptGuidelines: [
+			"Use coop_send to coordinate with another pi session (get ids from coop_peers).",
+			"Set wake:true only when the peer should act on the message now; otherwise it arrives as context on the peer's next turn.",
+		],
 		description:
 			"Send a message to another live pi session (id or unique prefix). Delivered to its socket " +
 			"immediately; set wake=true to make it act on the message now, else it arrives as context " +
@@ -435,6 +447,10 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "coop_logs",
 		label: "Coop Logs",
+		promptSnippet: "coop_logs - read another live pi session's recent turns",
+		promptGuidelines: [
+			"Use coop_logs to see what a peer session has been doing before messaging or coordinating with it.",
+		],
 		description: "Read the recent turns of another live pi session.",
 		parameters: Type.Object({
 			target: Type.String({ description: "target session id, or a unique prefix" }),

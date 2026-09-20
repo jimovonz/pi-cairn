@@ -147,6 +147,16 @@ describe("coop extension — socket + registry (pi↔pi)", () => {
 		expect(after.status).toBe("idle");
 	});
 
+	it("exposes a promptSnippet on every coop tool so the model can discover it", () => {
+		const a = harness();
+		coopExtension(a.pi as never);
+		const names = Object.keys(a.tools);
+		expect(names.sort()).toEqual(["coop_logs", "coop_peers", "coop_send"]);
+		for (const n of names) {
+			expect((a.tools[n] as { promptSnippet?: string }).promptSnippet).toBeTruthy();
+		}
+	});
+
 	it("is inert when PI_COOP=0", () => {
 		process.env.PI_COOP = "0";
 		const a = harness();
