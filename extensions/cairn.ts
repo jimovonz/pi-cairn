@@ -309,13 +309,23 @@ export default function (pi: ExtensionAPI) {
 			output: { exitCode: recoverExitCode(text, event.isError), stdout: text },
 		});
 
-		const nudge = await withTextFile(payload, (file) =>
-			runText(pi, "python3", [bridge, "checkpoint", "--text-file", file, ...identity(ctx)], {
-				timeoutMs: CAPTURE_TIMEOUT_MS,
-			}),
-		);
-		if (!nudge) return undefined;
-		return { content: [...(event.content ?? []), { type: "text" as const, text: `\n\n${nudge}` }] };
+		// Two injections on the same payload. `pretool` serves file-keyed
+		// gotchas/corrections plus structural context, reusing pretool_hook so pi
+		// matches Claude Code's per-file path; `checkpoint` is the mid-response
+		// memory nudge. Gotchas lead -- they are the actionable warning.
+		const injected = await withTextFile(payload, async (file) => {
+			const [fileCtx, nudge] = await Promise.all([
+				runText(pi, "python3", [bridge, "pretool", "--text-file", file, ...identity(ctx)], {
+					timeoutMs: CAPTURE_TIMEOUT_MS,
+				}),
+				runText(pi, "python3", [bridge, "checkpoint", "--text-file", file, ...identity(ctx)], {
+					timeoutMs: CAPTURE_TIMEOUT_MS,
+				}),
+			]);
+			return [fileCtx, nudge].filter((part) => part && part.length > 0).join("\n\n");
+		});
+		if (!injected) return undefined;
+		return { content: [...(event.content ?? []), { type: "text" as const, text: `\n\n${injected}` }] };
 	});
 
 	pi.registerTool({

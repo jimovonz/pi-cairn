@@ -204,6 +204,33 @@ describe("cairn extension", () => {
 		expect(result?.content[1].text).toContain("CAIRN CHECKPOINT");
 	});
 
+	it("injects file-keyed context from pretool ahead of the checkpoint nudge", async () => {
+		const h = harness((sub) => {
+			if (sub === "pretool") return "CAIRN GOTCHA: do not X";
+			if (sub === "checkpoint") return "CAIRN CHECKPOINT: ...";
+			return "";
+		});
+		cairnExtension(h.pi as never);
+		const result = (await h.handlers.tool_result?.(
+			{ type: "tool_result", toolName: "read", input: { file_path: "x.ts" }, content: [{ type: "text", text: "file" }], isError: false },
+			h.ctx,
+		)) as { content: { type: string; text: string }[] } | undefined;
+		expect(result?.content).toHaveLength(2);
+		const injected = result?.content[1].text ?? "";
+		expect(injected).toContain("CAIRN GOTCHA");
+		expect(injected.indexOf("CAIRN GOTCHA")).toBeLessThan(injected.indexOf("CAIRN CHECKPOINT"));
+	});
+
+	it("injects pretool context even when the checkpoint is silent", async () => {
+		const h = harness((sub) => (sub === "pretool" ? "CAIRN GOTCHA: only" : ""));
+		cairnExtension(h.pi as never);
+		const result = (await h.handlers.tool_result?.(
+			{ type: "tool_result", toolName: "read", input: { file_path: "x.ts" }, content: [{ type: "text", text: "file" }], isError: false },
+			h.ctx,
+		)) as { content: { type: string; text: string }[] } | undefined;
+		expect(result?.content[1].text).toContain("CAIRN GOTCHA: only");
+	});
+
 	it("leaves an unremarkable tool result untouched", async () => {
 		// The bridge decides what is notable; an empty reply must mean "no change",
 		// not an empty content array that would erase the tool's output.
