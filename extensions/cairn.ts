@@ -44,6 +44,19 @@ const QUERY_TIMEOUT_MS = 45_000;
  */
 const MAX_ENFORCEMENTS_PER_PROMPT = 2;
 
+/**
+ * Operating rule injected into the system prompt every session. It is the
+ * pi-side home for the "do not self-limit" rule (mirrored in the global rules
+ * file for the Claude Code host): classify a limitation as physical / policy /
+ * not-checked before voicing it, and never report the third as the first.
+ */
+const OPERATING_RULES = [
+	"Never report a limitation without classifying it: physical (truly impossible with the primitives you have), policy (possible but needs the user's approval), or not-checked (you have not worked out how).",
+	"Only the first is \"I cannot\". Reporting the third as the first is a false blocker.",
+	"You run as a full user account on a real machine with root via sudo. Before declaring something impossible, enumerate the primitives: signals, detached processes (setsid, systemd-run --user, nohup), files and inotifywait, cron/at/systemd timers, pty injection (xdotool on X11), sockets, installs.",
+	"\"The tool requires a restart\" is a convention, not a wall -- find the mechanism (reload, or a detached process that kills and respawns). Attempt it (with approval for anything destructive) rather than asserting incapability.",
+].join(" ");
+
 function cairnHome(): string {
 	return process.env.CAIRN_HOME ?? join(homedir(), "Projects", "cairn");
 }
@@ -209,7 +222,8 @@ export default function (pi: ExtensionAPI) {
 		// memories are data about this conversation, so they ride alongside the user
 		// message instead -- and stay out of the UI, since the user did not ask for them.
 		const result: BeforeAgentStartEventResult = {};
-		if (spec) result.systemPrompt = `${event.systemPrompt}\n\n${spec}`;
+		const injectedRules = `${spec}\n\n${OPERATING_RULES}`.trim();
+		if (injectedRules) result.systemPrompt = `${event.systemPrompt}\n\n${injectedRules}`;
 
 		// Bootstrap leads (it orients the whole session), retrieval follows (it
 		// answers this prompt). Both ride as a trailing message rather than in the
