@@ -152,8 +152,9 @@ extensions/graph.ts     code_graph lookup tool (the graph pull half)
 extensions/goal.ts      /goal: keep working until a condition holds
 extensions/thinking-label.ts  fills pi's collapsed-thinking header with token count + cost
 lib/bridge.ts           the only subprocess helper
-patches/                pi's own build fix, so a fresh pi clone compiles
 install.sh              registers extensions by path; --uninstall reverses it
+upgrade-pi.sh           rebase pi's local-cairn branch, build, verify
+patches/                local fixes to pi, applied by upgrade-pi.sh (currently empty)
 ```
 
 ## Install
@@ -182,8 +183,29 @@ npm run check    # tsgo --noEmit
 npm test
 ```
 
-## patches/
+## Upgrading pi
 
-`0001-restore-genai-finishreason.patch` restores a `FinishReason` case that upstream
-pi deleted in `71dca871b`; without it `npm run build` fails in `packages/ai` against
-the pinned `@google/genai`. Apply to a fresh pi clone with `git apply`.
+`./upgrade-pi.sh` (env `PI_DIR`, default `~/Projects/pi`) keeps a local pi
+checkout upgradable while retaining any local fixes:
+
+- `main` stays a pristine mirror of `origin/main` (fast-forward only).
+- Local changes to pi live as commits on a `local-cairn` branch, rebased onto
+  `main` on every upgrade. `git rebase` re-merges them with three-way conflict
+  handling and **drops any commit upstream has since taken** (patch-id match),
+  so the branch self-heals. That is why this is a branch and not an edit left
+  in the working tree — a dirty tree silently blocks `git pull`.
+- It then runs `npm install`, `npm run build`, and finally `npm run check` here
+  to verify the extensions still typecheck against the new pi.
+
+`--dry-run` prints the plan without touching anything.
+
+### patches/
+
+Anything in `patches/*.patch` is applied with `git apply --3way` if the checkout
+ever lands on a branch without it, then committed to `local-cairn`. The
+directory is currently empty: its one patch — `0001-restore-genai-finishreason`,
+restoring the `FinishReason.TOO_MANY_TOOL_CALLS` case upstream deleted in
+`71dca871b` (which broke `npm run build` in `packages/ai` against the pinned
+`@google/genai 2.21.0`) — became unnecessary when upstream reverted that commit
+in `ceea48f5d` (pi 0.87.1). The rebase dropped the local commit automatically on
+the next upgrade: the mechanism proving itself.
