@@ -157,9 +157,34 @@ upgrade-pi.sh           rebase pi's local-cairn branch, build, verify
 patches/                local fixes to pi, applied by upgrade-pi.sh (currently empty)
 ```
 
+## Prerequisites
+
+pi-cairn is an integration layer: each gate shells out to a tool that lives in
+its own repo. You only need the tools for the gates you turn on.
+
+| Gate | Needs | Default location | Override |
+|------|-------|------------------|----------|
+| `PI_CAIRN` | [cairn](https://github.com/jimovonz/cairn) — `hooks/pi_bridge.py`, `cairn/query.py` | `~/Projects/cairn` | `CAIRN_HOME` |
+| `PI_GRAPH` | `cairn-graph` on `PATH` (ships with cairn) | — | — |
+| `PI_ROUTING`, `PI_CCM` | [claude-context-hooks](https://github.com/jimovonz/claude-context-hooks) | `~/Projects/claude-context-hooks` | `CCH_HOME` |
+| `PI_RTK` | `rtk` on `PATH` | — | — |
+| `PI_GOAL` | nothing | — | — |
+
+Plus [pi](https://github.com/earendil-works/pi) itself and `python3`.
+
+`./install.sh` prints a dependency table before doing anything. Missing `pi`,
+`python3`, cairn or `typebox` is fatal — nothing is installed. Everything else
+reports `warn` and the corresponding layer degrades to a no-op, so you can run
+memory without the routing stack, or vice versa.
+
+Retrieval is roughly 10x slower without cairn's embedding daemon (~8s per
+prompt versus ~0.7s), so `install.sh` checks for it and tells you how to start
+it if it is down.
+
 ## Install
 
 ```bash
+npm install           # typebox + dev tooling
 ./install.sh          # registers absolute paths in ~/.pi/agent/settings.json
 export PI_CAIRN=1
 ```
@@ -174,14 +199,21 @@ pi -p -e ./extensions/cairn.ts "hello"
 
 ## Development
 
-Types resolve against a sibling pi checkout via `tsconfig.json` `paths` — no npm
-dependency on pi, and `import type` erases at runtime, so jiti never resolves it.
-
 ```bash
-npm install      # vitest + typescript only
+npm install
 npm run check    # tsgo --noEmit
-npm test
+npm test         # vitest, 112 tests
 ```
+
+Types resolve through `tsconfig.json` `paths`, which lists two locations in
+order: a sibling pi source checkout (`../pi`) if you have one, otherwise the
+published `@earendil-works/*` packages from `devDependencies`. A fresh clone
+therefore typechecks with nothing but `npm install`, while a pi contributor
+working against unreleased API still gets their local build.
+
+Either way pi is type-only: the extensions import it with `import type`, which
+erases at compile time, so jiti never resolves pi at runtime and pi-cairn never
+pins a pi version.
 
 ## Upgrading pi
 

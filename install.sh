@@ -49,6 +49,17 @@ need_file() {
 	fi
 }
 
+# Same check, but non-fatal: for a layer that is off unless its gate is set, so
+# a missing tool degrades that one layer to a no-op instead of refusing to
+# install the layers the user does want.
+opt_file() {
+	if [[ -e "$1" ]]; then
+		printf '  ok    %-16s %s\n' "$2" "$1"
+	else
+		printf '  warn  %-16s absent (%s)\n' "$2" "$3"
+	fi
+}
+
 if [[ "$MODE" == "install" ]]; then
 	echo "Dependencies:"
 	need python3
@@ -58,7 +69,8 @@ if [[ "$MODE" == "install" ]]; then
 	need_file "$REPO/node_modules/typebox" typebox
 	# The routing layer calls the CCH interceptors by absolute path, and they in turn
 	# invoke cache-wrap.py by its own resolved path -- neither needs to be on PATH.
-	need_file "${CCH_HOME:-$HOME/Projects/claude-context-hooks}/hooks/intercept-bash.py" intercept-bash.py
+	opt_file "${CCH_HOME:-$HOME/Projects/claude-context-hooks}/hooks/intercept-bash.py" \
+		intercept-bash.py "PI_ROUTING/PI_CCM degrade to no-ops"
 	# Optional: only the routing layer needs these, and it is off by default.
 	for opt in rtk cairn-graph ccm-get.py; do
 		if command -v "$opt" >/dev/null 2>&1; then

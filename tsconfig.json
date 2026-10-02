@@ -8,9 +8,19 @@
 		"noEmit": true,
 		"skipLibCheck": true,
 		"types": ["node"],
+		// A sibling pi source checkout wins when present; otherwise types resolve
+		// from the npm packages in devDependencies, so a fresh clone can run
+		// `npm install && npm run check` without building pi. Both are type-only
+		// (`import type`), so neither is a runtime dependency either way.
 		"paths": {
-			"@earendil-works/pi-coding-agent": ["../pi/packages/coding-agent/dist/index.d.ts"],
-			"@earendil-works/pi-ai": ["../pi/packages/ai/dist/index.d.ts"]
+			"@earendil-works/pi-coding-agent": [
+				"../pi/packages/coding-agent/dist/index.d.ts",
+				"./node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"
+			],
+			"@earendil-works/pi-ai": [
+				"../pi/packages/ai/dist/index.d.ts",
+				"./node_modules/@earendil-works/pi-ai/dist/index.d.ts"
+			]
 		}
 	},
 	"include": ["extensions/**/*.ts", "lib/**/*.ts", "test/**/*.ts"]

@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # No sibling pi checkout on CI, so tsconfig's second `paths` entry — the
+      # published @earendil-works packages — is what resolves the types here.
+      # That makes this job the standing check that a fresh clone still builds.
+      - run: npm ci
+
+      - run: npm run check
+
+      - run: npm test
