@@ -32,19 +32,64 @@ handler on `agent_end` that calls
 instead of stop. It has to be `agent_end` — `turn_end` messages are consumed as an
 ordinary continuation, and `agent_settled` runs after the loop has exited.
 
-## Three contracts worth knowing before editing
+## Prerequisites
 
-1. **Success is stdout, not exit status.** `pi_bridge.py` wraps everything in bare
-   `except Exception` and exits 0 regardless; `cch-batch.py` is exit-0 by design.
-   Branch on output, never on the exit code. `lib/bridge.ts` encodes this as `ok`.
-2. **Handlers must not throw.** A throw in a `tool_call` handler becomes
-   "Extension failed, blocking execution" and denies the tool. Every failure is
-   captured and returned as data so that a broken layer degrades to stock pi.
-3. **CCH judges the command before RTK rewrites it.** RTK turns `cat foo.ts` into
-   `rtk read foo.ts`, which matches none of the bulk-read patterns `guards.block`
-   looks for, so running RTK first disables the guards entirely — silently. The
-   order matters here because this is a pipeline: each stage sees the previous
-   stage's output, not the original command.
+pi-cairn is an integration layer: each gate shells out to a tool that lives in
+its own repo. You only need the tools for the gates you turn on.
+
+| Gate | Needs | Default location | Override |
+|------|-------|------------------|----------|
+| `PI_CAIRN` | [cairn](https://github.com/jimovonz/cairn) — `hooks/pi_bridge.py`, `cairn/query.py` | `~/Projects/cairn` | `CAIRN_HOME` |
+| `PI_GRAPH` | `cairn-graph` on `PATH` (ships with cairn) | — | — |
+| `PI_ROUTING`, `PI_CCM` | [claude-context-hooks](https://github.com/jimovonz/claude-context-hooks) | `~/Projects/claude-context-hooks` | `CCH_HOME` |
+| `PI_RTK` | `rtk` on `PATH` | — | — |
+| `PI_GOAL` | nothing | — | — |
+
+Plus [pi](https://github.com/earendil-works/pi) itself and `python3`.
+
+`./install.sh` prints a dependency table before doing anything. Missing `pi`,
+`python3`, cairn or `typebox` is fatal — nothing is installed. Everything else
+reports `warn` and the corresponding layer degrades to a no-op, so you can run
+memory without the routing stack, or vice versa.
+
+Retrieval is roughly 10x slower without cairn's embedding daemon (~8s per
+prompt versus ~0.7s), so `install.sh` checks for it and tells you how to start
+it if it is down.
+
+## Install
+
+```bash
+git clone https://github.com/jimovonz/pi-cairn.git
+cd pi-cairn
+npm install           # typebox + dev tooling
+./install.sh          # registers absolute paths in ~/.pi/agent/settings.json
+export PI_CAIRN=1
+```
+
+Keep the clone where you want it to stay: `install.sh` registers these files
+with pi by absolute path, so moving the directory afterwards means re-running it.
+
+`./install.sh --uninstall` reverses it. Both are idempotent.
+
+Everything is additive and off by default. To try a layer without installing:
+
+```bash
+pi -p -e ./extensions/cairn.ts "hello"
+```
+
+## Layout
+
+```
+extensions/cairn.ts     memory: before_agent_start + agent_end + cairn_query
+extensions/routing.ts   one ordered tool_call pipeline
+extensions/graph.ts     code_graph lookup tool (the graph pull half)
+extensions/goal.ts      /goal: keep working until a condition holds
+extensions/thinking-label.ts  fills pi's collapsed-thinking header with token count + cost
+lib/bridge.ts           the only subprocess helper
+install.sh              registers extensions by path; --uninstall reverses it
+upgrade-pi.sh           rebase pi's local-cairn branch, build, verify
+patches/                optional local fixes to pi, applied by upgrade-pi.sh
+```
 
 ## Performance
 
@@ -128,65 +173,6 @@ turn 1  input 3214  cacheRead 0     $0.0011226
 turn 2  input 1128  cacheRead 3200  $0.0003984
 ```
 
-## Layout
-
-```
-extensions/cairn.ts     memory: before_agent_start + agent_end + cairn_query
-extensions/routing.ts   one ordered tool_call pipeline
-extensions/graph.ts     code_graph lookup tool (the graph pull half)
-extensions/goal.ts      /goal: keep working until a condition holds
-extensions/thinking-label.ts  fills pi's collapsed-thinking header with token count + cost
-lib/bridge.ts           the only subprocess helper
-install.sh              registers extensions by path; --uninstall reverses it
-upgrade-pi.sh           rebase pi's local-cairn branch, build, verify
-patches/                optional local fixes to pi, applied by upgrade-pi.sh
-```
-
-## Prerequisites
-
-pi-cairn is an integration layer: each gate shells out to a tool that lives in
-its own repo. You only need the tools for the gates you turn on.
-
-| Gate | Needs | Default location | Override |
-|------|-------|------------------|----------|
-| `PI_CAIRN` | [cairn](https://github.com/jimovonz/cairn) — `hooks/pi_bridge.py`, `cairn/query.py` | `~/Projects/cairn` | `CAIRN_HOME` |
-| `PI_GRAPH` | `cairn-graph` on `PATH` (ships with cairn) | — | — |
-| `PI_ROUTING`, `PI_CCM` | [claude-context-hooks](https://github.com/jimovonz/claude-context-hooks) | `~/Projects/claude-context-hooks` | `CCH_HOME` |
-| `PI_RTK` | `rtk` on `PATH` | — | — |
-| `PI_GOAL` | nothing | — | — |
-
-Plus [pi](https://github.com/earendil-works/pi) itself and `python3`.
-
-`./install.sh` prints a dependency table before doing anything. Missing `pi`,
-`python3`, cairn or `typebox` is fatal — nothing is installed. Everything else
-reports `warn` and the corresponding layer degrades to a no-op, so you can run
-memory without the routing stack, or vice versa.
-
-Retrieval is roughly 10x slower without cairn's embedding daemon (~8s per
-prompt versus ~0.7s), so `install.sh` checks for it and tells you how to start
-it if it is down.
-
-## Install
-
-```bash
-git clone https://github.com/jimovonz/pi-cairn.git
-cd pi-cairn
-npm install           # typebox + dev tooling
-./install.sh          # registers absolute paths in ~/.pi/agent/settings.json
-export PI_CAIRN=1
-```
-
-Keep the clone where you want it to stay: `install.sh` registers these files
-with pi by absolute path, so moving the directory afterwards means re-running it.
-
-`./install.sh --uninstall` reverses it. Both are idempotent.
-
-Everything is additive and off by default. To try a layer without installing:
-
-```bash
-pi -p -e ./extensions/cairn.ts "hello"
-```
-
 ## Development
 
 ```bash
@@ -204,6 +190,20 @@ working against unreleased API still gets their local build.
 Either way pi is type-only: the extensions import it with `import type`, which
 erases at compile time, so jiti never resolves pi at runtime and pi-cairn never
 pins a pi version.
+
+## Three contracts worth knowing before editing
+
+1. **Success is stdout, not exit status.** `pi_bridge.py` wraps everything in bare
+   `except Exception` and exits 0 regardless; `cch-batch.py` is exit-0 by design.
+   Branch on output, never on the exit code. `lib/bridge.ts` encodes this as `ok`.
+2. **Handlers must not throw.** A throw in a `tool_call` handler becomes
+   "Extension failed, blocking execution" and denies the tool. Every failure is
+   captured and returned as data so that a broken layer degrades to stock pi.
+3. **CCH judges the command before RTK rewrites it.** RTK turns `cat foo.ts` into
+   `rtk read foo.ts`, which matches none of the bulk-read patterns `guards.block`
+   looks for, so running RTK first disables the guards entirely — silently. The
+   order matters here because this is a pipeline: each stage sees the previous
+   stage's output, not the original command.
 
 ## Upgrading pi
 
