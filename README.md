@@ -3,23 +3,9 @@
 Cairn memory, CCH/CCM context compression, the code-graph footer and RTK command
 rewriting, for the [pi](https://github.com/earendil-works/pi) coding agent.
 
-## Why this repo exists
-
-An earlier version of this integration lived as uncommitted edits inside a pi
-checkout — including a six-file patch to pi's core. When that checkout was deleted,
-all of it went with it. The only piece that survived was the half that happened to
-live in another repo.
-
-So: **nothing here lives in the pi checkout.** `install.sh` registers these files
-with pi by absolute path, and this repo stays the source of truth. A pi reinstall
-costs nothing.
-
-Registration is by path and **not** by symlinking into `~/.pi/agent/extensions`,
-even though pi discovers symlinks there. jiti resolves an extension's imports
-relative to the path it was loaded from, without dereferencing symlinks — so a
-symlinked extension resolves `typebox` and `../lib/bridge.ts` against the symlink's
-directory, where neither exists. Verified: loading via a symlink fails with
-`Cannot find module 'typebox'` while the same file loaded by its real path works.
+Every layer is off until you set its gate, and `install.sh` registers these files
+with pi by absolute path — nothing is copied or symlinked into the pi checkout, so
+upgrading or reinstalling pi costs nothing.
 
 ## Design
 
@@ -40,9 +26,8 @@ Wrapping bash in `cache-wrap.py` is what delivers the `[CCM_CACHED]` stub, the
 symbol menu, the `[cairn-graph: …]` footer and `.cch/rules` all at once — none of
 that is reimplemented here.
 
-**No patch to pi's core is required.** The earlier port patched core to add a
-post-turn gate, believing pi could not re-prompt after a turn. It can, and could
-already: a handler on `agent_end` that calls
+**No patch to pi's core is required.** A post-turn gate does not need one: a
+handler on `agent_end` that calls
 `pi.sendUserMessage(text, { deliverAs: "followUp" })` makes the agent loop continue
 instead of stop. It has to be `agent_end` — `turn_end` messages are consumed as an
 ordinary continuation, and `agent_settled` runs after the loop has exited.

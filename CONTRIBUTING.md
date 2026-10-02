@@ -22,8 +22,15 @@ never fail the session or block `install.sh` for the layers someone else wants.
 
 **Nothing lives in the pi checkout.** `install.sh` registers files here by
 absolute path, so a pi reinstall costs nothing. Do not add anything that has to
-be copied or symlinked into `~/.pi`, and read the symlink note at the top of the
-README before trying.
+be copied into `~/.pi`.
+
+Registration is by real path and **not** by symlinking into
+`~/.pi/agent/extensions`, even though pi discovers symlinks there. jiti resolves
+an extension's imports relative to the path it was loaded from, without
+dereferencing symlinks, so a symlinked extension looks for `typebox` and
+`../lib/bridge.ts` beside the symlink, where neither exists. Loading via a
+symlink fails with `Cannot find module 'typebox'`; the same file loaded by its
+real path works.
 
 **pi is a type-only dependency.** Import it with `import type`. A value import
 would make jiti resolve pi at runtime and pin a version.
