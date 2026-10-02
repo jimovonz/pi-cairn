@@ -42,14 +42,14 @@ ordinary continuation, and `agent_settled` runs after the loop has exited.
    captured and returned as data so that a broken layer degrades to stock pi.
 3. **CCH judges the command before RTK rewrites it.** RTK turns `cat foo.ts` into
    `rtk read foo.ts`, which matches none of the bulk-read patterns `guards.block`
-   looks for, so running RTK first disables the guards entirely — silently. Note
-   this deliberately differs from CCH's own installer, which orders RTK before CCH:
-   Claude Code hands every hook the original input, so ordering there does not chain
-   the way a pipeline does.
+   looks for, so running RTK first disables the guards entirely — silently. The
+   order matters here because this is a pipeline: each stage sees the previous
+   stage's output, not the original command.
 
 ## Performance
 
-Measured on this machine, per call:
+Per call, measured on one Linux workstation — read these as orders of
+magnitude rather than guarantees:
 
 | Call | Cost | When |
 |---|---|---|
@@ -115,13 +115,13 @@ returns a hit. Measured by sending an identical 3.4k-token prefix twice:
 All six advertise the same $0.006/M cacheRead. Alibaba, Modal and BaseTen list
 5x that and are excluded; Relace is fp4 and excluded on quality grounds.
 
-DeepSeek's own first-party endpoint is **not usable on this account**: pinning it
-returns `404 Paid model training violation (account settings)`. The slug is valid
-(the routing funnel narrows 16 endpoints to 1) but it fails the privacy guardrail.
-Changing that would mean relaxing the account's data-training policy, so the pin
-targets caching third parties instead.
+DeepSeek's own first-party endpoint may be refused depending on your OpenRouter
+privacy settings: pinning it can return `404 Paid model training violation
+(account settings)`. That is the data-training guardrail rejecting the request,
+not an invalid slug. Allowing it means relaxing that setting, so the pin above
+targets third parties that cache.
 
-Verified through pi, two turns of one session:
+Two turns of one session, through pi:
 
 ```
 turn 1  input 3214  cacheRead 0     $0.0011226
@@ -139,7 +139,7 @@ extensions/thinking-label.ts  fills pi's collapsed-thinking header with token co
 lib/bridge.ts           the only subprocess helper
 install.sh              registers extensions by path; --uninstall reverses it
 upgrade-pi.sh           rebase pi's local-cairn branch, build, verify
-patches/                local fixes to pi, applied by upgrade-pi.sh (currently empty)
+patches/                optional local fixes to pi, applied by upgrade-pi.sh
 ```
 
 ## Prerequisites
@@ -214,8 +214,8 @@ checkout upgradable while retaining any local fixes:
 - Local changes to pi live as commits on a `local-cairn` branch, rebased onto
   `main` on every upgrade. `git rebase` re-merges them with three-way conflict
   handling and **drops any commit upstream has since taken** (patch-id match),
-  so the branch self-heals. That is why this is a branch and not an edit left
-  in the working tree — a dirty tree silently blocks `git pull`.
+  so the branch self-heals. Keeping local changes as commits rather than
+  working-tree edits is what keeps `git pull` unblocked.
 - It then runs `npm install`, `npm run build`, and finally `npm run check` here
   to verify the extensions still typecheck against the new pi.
 
@@ -223,11 +223,10 @@ checkout upgradable while retaining any local fixes:
 
 ### patches/
 
-Anything in `patches/*.patch` is applied with `git apply --3way` if the checkout
-ever lands on a branch without it, then committed to `local-cairn`. The
-directory is currently empty: its one patch — `0001-restore-genai-finishreason`,
-restoring the `FinishReason.TOO_MANY_TOOL_CALLS` case upstream deleted in
-`71dca871b` (which broke `npm run build` in `packages/ai` against the pinned
-`@google/genai 2.21.0`) — became unnecessary when upstream reverted that commit
-in `ceea48f5d` (pi 0.87.1). The rebase dropped the local commit automatically on
-the next upgrade: the mechanism proving itself.
+Create a `patches/` directory and drop `*.patch` files in it when pi needs a
+local fix to build or run. `upgrade-pi.sh` applies each one with
+`git apply --3way` if the checkout lands on a branch without it, then commits it
+to `local-cairn`; a missing directory is skipped, so none is required.
+
+Once upstream adopts an equivalent fix, the next rebase drops the local commit
+by patch-id match and the patch file can be deleted.
