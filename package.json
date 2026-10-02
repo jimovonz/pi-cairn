@@ -5,6 +5,14 @@
 	"license": "MIT",
 	"type": "module",
 	"description": "Cairn memory, CCH/CCM context compression, code graph and RTK for the pi coding agent",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/jimovonz/pi-cairn.git"
+	},
+	"homepage": "https://github.com/jimovonz/pi-cairn#readme",
+	"bugs": {
+		"url": "https://github.com/jimovonz/pi-cairn/issues"
+	},
 	"scripts": {
 		"check": "tsgo --noEmit",
 		"test": "vitest --run"

@@ -184,10 +184,15 @@ it if it is down.
 ## Install
 
 ```bash
+git clone https://github.com/jimovonz/pi-cairn.git
+cd pi-cairn
 npm install           # typebox + dev tooling
 ./install.sh          # registers absolute paths in ~/.pi/agent/settings.json
 export PI_CAIRN=1
 ```
+
+Keep the clone where you want it to stay: `install.sh` registers these files
+with pi by absolute path, so moving the directory afterwards means re-running it.
 
 `./install.sh --uninstall` reverses it. Both are idempotent.
 
